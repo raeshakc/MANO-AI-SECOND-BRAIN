@@ -13,8 +13,8 @@ def main():
     assert result["conflicts"], "Expected at least one synthetic schedule clash"
     assert get_relevant_history(conn, "What were we talking about yesterday?")
     proposed = {"kind": "add_task", "title": "Practice exam questions", "due_at": (now_local()+timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")}
-    add_proposals(conn, [proposed])
     before = len(list_commitments(conn))
+    add_proposals(conn, [proposed])
     assert len(list_commitments(conn)) == before, "No action executes before approval"
     accept_proposal(conn, pending_proposals(conn)[0]["id"])
     assert len(list_commitments(conn)) == before + 1

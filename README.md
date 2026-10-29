@@ -2,7 +2,7 @@
 
 **NVIDIA × Nebius Global AI Hackathon (2026) · Personal AI track**
 
-MANO is a student-focused life-coordination agent: an assistant that understands conversations and commitments in context, identifies genuine deadline or schedule conflicts, proposes a realistic way forward, and turns recommendations into **approved** tasks, time blocks, email drafts, or source-grounded research.
+MANO is a student-focused personal AI: a mentor that knows your goals, a planner that spots real deadline and schedule conflicts, a news briefing tuned to your interests, and a friend that listens when you just need to vent. Recommendations become **approved** tasks, time blocks, email drafts, or source-grounded research, never silent actions.
 
 > **Pitch:** Most apps help you track one part of your life. MANO connects them. When study, work, friendships and career goals collide, MANO helps you decide what matters and take the next step.
 
@@ -10,6 +10,12 @@ MANO is a student-focused life-coordination agent: an assistant that understands
 
 | Capability | Implementation | Requires API? |
 |---|---|---|
+| **Agent with reusable skills** | Nemotron chains up to 3 read-only skills (schedule check, past-conversation recall, focus planner, news, opportunity search, web research) before answering; every step is shown under the reply | Nebius key (+ Tavily for web skills) |
+| **Opportunity Radar** | Live Tavily search for internships, scholarships, events, research programs and hackathons matched to the profile; Nemotron turns real results into source-linked cards; "Track this application" stages a deadline task | Nebius + Tavily keys |
+| Goals profile ("About me") | Saved goals, school, interests, stressors and support style; fed into every conversation | No (to save) |
+| Mentor-style guidance | Advice tied to your saved goals and actual commitments | Nebius key |
+| Friend mode | "Just listen" toggle, plus automatic detection of venting; never stages tasks while listening | Nebius key |
+| Personalized news briefing | Tavily news search on your saved interests, summarized by Nemotron with numbered sources | Nebius + Tavily keys |
 | Actual AI conversations | NVIDIA Nemotron 3 Super on **Nebius Token Factory** OpenAI-compatible API | Nebius key |
 | Recall prior conversations | SQLite dated history and topic-relevant retrieval, including yesterday recap | Nebius key for conversational reply |
 | Private persistence | `MANO_DATA_MODE=local`, SQLite on the individual's own computer | No |
@@ -26,6 +32,24 @@ MANO is a student-focused life-coordination agent: an assistant that understands
 | Fictional demo scenario | Dated chat history + exams, workshop, overlapping meeting and shift | No |
 
 The dashboard intentionally **does not** open with a monologue announcing memory features or require an explicit “remember this” command. Relevant previous conversations are automatically supplied when responding. Only action-taking requires approval.
+
+## How MANO uses NVIDIA Nemotron and Nebius Token Factory
+
+Every AI feature makes a runtime call to **NVIDIA Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`) through the **Nebius Token Factory** OpenAI-compatible API, with JSON-mode output:
+
+- **Agent loop** (`mano_agent.py`): Nemotron reads the student's profile, commitments and conflict radar, then decides which reusable skills to run, reads the results, and writes a grounded answer plus approval-gated proposals. The loop uses plain JSON turns, so it works on any Token Factory model with JSON output.
+- **Mentor and friend modes**: the same model switches between goal-aware coaching and pure listening (no tasks) based on the message or the "Just listen" toggle.
+- **Grounded summarization**: news briefings and Opportunity Radar cards are written by Nemotron from numbered search results only. The app rejects any card that doesn't point at a real result, and any deadline that's malformed or already past.
+- **Why Token Factory**: one OpenAI-compatible endpoint meant no custom serving code, and switching models is a single environment variable (`NEBIUS_MODEL`), which made it quick to iterate on prompts and the agent protocol.
+
+## How MANO uses Tavily
+
+Tavily is MANO's window onto the world, always called at runtime and always cited:
+
+1. **Opportunity Radar**: profile-aware queries (interests, school, location, the current application cycle) for internships, scholarships, events, research programs and hackathons.
+2. **Personalized news briefing**: `topic: news` searches over the past week on each saved interest.
+3. **Agent web skills**: `search_news`, `find_opportunities` and `web_research`, which Nemotron calls on its own when a question needs fresh information.
+4. **Approved research proposals** from chat.
 
 ## Important limits and privacy
 
@@ -95,13 +119,17 @@ To keep conversation data **between restarts on your own computer**, set `MANO_D
 
 ## Try the end-to-end story
 
-1. Click **Load fictional student week**. It seeds a *fictional* yesterday conversation about an exam, a club presentation and the gym, plus a conflicting shift and meeting.
+1. Click **Load fictional student week**. It seeds a *fictional* profile (goals and interests), a yesterday conversation about an exam, a club presentation and the gym, plus a conflicting shift and meeting.
 2. Check **Your radar**: it should identify the overlap in the time blocks.
 3. With a Nebius key configured, click **Yesterday's recap**. The assistant should recall the factual earlier conversation without invented detail.
 4. Click **Rescue my week**. MANO should discuss the existing conflict and suggest realistic steps, not invent time availability.
 5. Approve a proposed task/time block. Confirm that it's visible in the right-hand panel. The suggestion shouldn't have been saved before approval.
 6. Download the calendar `.ics`, **import** it into a calendar, and inspect the alert. A download alone does not create real notifications.
 7. Approve an email draft and inspect it under **Prepared email drafts**. It is not sent.
+8. With a Tavily key, click **My news briefing**: news on the profile's interests, each item numbered to a real source.
+9. Type something like "I'm exhausted and just need to vent". MANO should respond with empathy and propose no tasks.
+10. Ask "What should I focus on this week, and are there internships I should apply for?" Open **How MANO worked this out** under the reply to see the skills it chained.
+11. Open **Opportunity Radar**, pick Internships, click **Find for me**, then **Track this application** on a card and approve it.
 
 ## Reproducible checks
 
@@ -113,7 +141,7 @@ python -m scripts.demo_check
 
 A public demo should set `MANO_MAX_CALLS_PER_SESSION` and must still be protected with provider spending controls; this is a *per-browser* safety rail, not a global limit.
 
-The automated suite checks persistence, date-specific recall, strict approval, conflict correctness, data deletion, calendar event generation, email drafts and prompt construction. These are **unit tests**, not a claim that the live model or Streamlit GUI was externally verified.
+The automated suite (41 tests) checks the agent loop and skill budget, skill sandboxing, Opportunity Radar validation, date-specific recall, strict approval, conflict correctness, data deletion, backup/restore, Rescue Studio planning, calendar event generation, email drafts, the goals profile, friend mode and the news briefing's source handling (with the model and search mocked). These are **unit tests**, not a claim that the live model or Streamlit GUI was externally verified.
 
 ## Security and privacy boundaries
 
@@ -125,9 +153,17 @@ The automated suite checks persistence, date-specific recall, strict approval, c
 - Source lookup through Tavily is optional, requires a separate key and human approval, and never implies that unsupported web research has occurred.
 - A production release would need encrypted multi-tenant identity and storage, complete deletion controls, secure OAuth permissions, background jobs with explicit opt-in, provider rate limits, and more extensive evaluations.
 
-## Publish and submit
+## Roadmap: from MVP to everyday assistant
 
-See **[GitHub → deployment → Devpost instructions](docs/GITHUB_AND_DEPLOY.md)**, **[Devpost text draft](docs/DEVPOST_DRAFT.md)**, **[video script](docs/VIDEO_SCRIPT.md)** and **[verification log](docs/TEST_RESULTS.md)**.
+The vision is one assistant a student can rely on daily. Each step below needs explicit, revocable permission and per-user encrypted storage, which is why none of them is faked in this MVP.
+
+1. **Accounts and persistent memory** on the hosted app (sign-in, encrypted per-user database), replacing manual backup/restore.
+2. **Gmail and Google/Outlook Calendar** via OAuth: read deadlines and invites, check real availability in Rescue Studio, send approved drafts.
+3. **College systems** (Canvas/Blackboard) for assignments and grades, plus campus resources and opportunities matched to the student's goals.
+4. **Proactive check-ins**: an opt-in morning brief and deadline nudges by push or email.
+5. **Browsing context**, strictly opt-in, from a browser extension the student controls (for example, saving pages to MANO rather than collecting history).
+
+See [docs/V3_RESCUE_STUDIO_DEMO.md](docs/V3_RESCUE_STUDIO_DEMO.md) for the demo walkthrough.
 
 ## Hackathon submission plan
 
@@ -159,7 +195,8 @@ See **[GitHub → deployment → Devpost instructions](docs/GITHUB_AND_DEPLOY.md
 ## Project files
 
 - `app.py` — Streamlit UI and approvals
-- `mano_core.py` — SQLite storage, deterministic radar, Nemotron integration, validated proposals, calendar export
+- `mano_agent.py` — reusable skills registry, Nemotron agent loop, Opportunity Radar
+- `mano_core.py` — SQLite storage, goals profile, deterministic radar, Nemotron integration (mentor and friend modes), news briefing, validated proposals, calendar export
 - `scripts/demo_check.py` — Offline workflow check
 - `scripts/verify_nebius.py` — Optional real-model smoke check
 - `tests/` — Automated local tests

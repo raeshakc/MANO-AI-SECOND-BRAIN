@@ -13,12 +13,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mano_core import (
-    accept_proposal, add_commitment, add_message, add_proposals, add_time_block,
-    ask_nemotron, build_rescue_plan, calendar_ics, connect, erase_data, export_data, import_data,
-    list_commitments, list_drafts, list_time_blocks, load_demo_scenario,
-    mark_done, now_local, pending_proposals, radar, recent_messages,
-    reject_proposal, remove_time_block, tavily_research,
+    PROFILE_FIELDS, accept_proposal, add_commitment, add_message, add_proposals, add_time_block,
+    build_rescue_plan, calendar_ics, connect, erase_data, export_data, get_profile,
+    import_data, interest_topics, list_commitments, list_drafts, list_time_blocks, load_demo_scenario,
+    mark_done, now_local, pending_proposals, personalized_briefing, radar, recent_messages,
+    reject_proposal, remove_time_block, save_profile, tavily_research,
 )
+from mano_agent import OPPORTUNITY_KINDS, SKILLS, opportunity_radar, opportunity_task, run_agent
 
 st.set_page_config(page_title="MANO ✦ | Make room for life", page_icon="✦", layout="wide")
 st.markdown("""
@@ -49,6 +50,7 @@ if "conn" not in st.session_state:
 
 conn = st.session_state.conn
 key_is_set = bool(os.getenv("NEBIUS_API_KEY", "").strip())
+news_key_is_set = bool(os.getenv("TAVILY_API_KEY", "").strip())
 # A basic demo safety rail, not an authentication or global rate-limit system.
 try:
     max_calls = max(1, int(os.getenv("MANO_MAX_CALLS_PER_SESSION", "10")))
@@ -61,6 +63,11 @@ can_chat = key_is_set and calls_left > 0
 all_tasks = list_commitments(conn)
 blocks = list_time_blocks(conn)
 summary = radar(conn)
+profile = get_profile(conn)
+
+# Messages that must survive an st.rerun() (e.g. after restoring a backup).
+if "flash" in st.session_state:
+    st.success(st.session_state.pop("flash"))
 
 with st.sidebar:
     st.markdown("## MANO ✦")
@@ -73,6 +80,13 @@ with st.sidebar:
         st.warning("Add a Nebius API key for live chat", icon="⚠️")
     st.caption("The AI runs only when you send a message. No responses are simulated.")
     st.caption(f"Demo usage: {calls_left} AI requests left in this browser session. This is not a global cost cap.")
+    with st.expander(f"🧩 MANO's skills ({len(SKILLS)})"):
+        st.caption("Reusable skills Nemotron can chain on its own. They only *read*; any change still waits for your approval.")
+        for spec in SKILLS.values():
+            st.markdown(f"**{spec['label'].split(' ', 1)[1]}**  \n<span class='small-label'>{spec['description']}</span>",
+                        unsafe_allow_html=True)
+        if not news_key_is_set:
+            st.caption("Web skills (news, opportunities, research) need `TAVILY_API_KEY`.")
     st.divider()
     st.markdown("**Demo controls**")
     if st.button("✦ Load fictional student week", use_container_width=True):
@@ -93,7 +107,8 @@ with st.sidebar:
             except Exception as exc:
                 st.error(f"Could not restore backup: {exc}")
             else:
-                st.success(f"Restored {result['messages']} conversation messages and {result['commitments']} commitments.")
+                st.session_state.flash = (f"Restored {result['messages']} conversation messages, "
+                                          f"{result['commitments']} commitments and your profile.")
                 st.rerun()
     confirm_reset = st.checkbox("I want to erase this session's data")
     if st.button("Erase local MANO data", disabled=not confirm_reset, use_container_width=True):
@@ -113,6 +128,28 @@ metric1, metric2, metric3 = st.columns(3)
 metric1.metric("Deadlines this week", len(summary["upcoming"]))
 metric2.metric("Schedule collisions", len(summary["conflicts"]))
 metric3.metric("Waiting for your approval", len(pending_proposals(conn)))
+
+has_profile = any(profile.values())
+with st.expander("🎯 About me — goals, interests and how you like support", expanded=not has_profile):
+    st.caption("MANO uses this in every conversation so its advice fits *your* goals, and to pick news topics for your briefing. "
+               "It's stored with the rest of your MANO data and included in your export.")
+    with st.form("profile_form"):
+        left, right = st.columns(2)
+        values = {}
+        # Keys change when the saved profile changes (demo load, restore, erase),
+        # so the form shows the stored values instead of stale widget state.
+        version = abs(hash(tuple(profile.values())))
+        for i, (field, (label, limit)) in enumerate(PROFILE_FIELDS.items()):
+            col = left if i % 2 == 0 else right
+            long_field = limit > 300
+            widget = col.text_area if long_field else col.text_input
+            kwargs = {"height": 90} if long_field else {}
+            values[field] = widget(label, value=profile[field], max_chars=limit,
+                                   key=f"profile_{field}_{version}", **kwargs)
+        if st.form_submit_button("Save my profile", type="primary"):
+            save_profile(conn, values)
+            st.session_state.flash = "Profile saved. MANO will use it from your next message."
+            st.rerun()
 
 with st.expander("🧭 Rescue Studio — turn deadlines into a realistic plan", expanded=True):
     st.caption("Choose when you're *potentially* available. MANO will find open slots around the schedule you've saved, prioritize earlier deadlines and stage a plan for your approval. This is not connected to your external calendars.")
@@ -155,6 +192,46 @@ with st.expander("🧭 Rescue Studio — turn deadlines into a realistic plan", 
                 else:
                     st.info("Those blocks are already saved or awaiting approval. Nothing duplicated.")
                 st.rerun()
+
+with st.expander("🎓 Opportunity Radar — internships, scholarships and events that fit you"):
+    st.caption("MANO searches the web live with Tavily using your **About me** profile, and Nemotron turns real results "
+               "into cards. Every card links to its source; always confirm details and deadlines on the site.")
+    o1, o2, o3 = st.columns([1, 1.4, .8])
+    with o1:
+        opp_kind = st.selectbox("Looking for", list(OPPORTUNITY_KINDS), format_func=OPPORTUNITY_KINDS.get, key="opp_kind")
+    with o2:
+        opp_focus = st.text_input("Focus (optional)", placeholder=", ".join(interest_topics(profile, 2)) or "e.g. machine learning",
+                                  key="opp_focus")
+    with o3:
+        st.write("")
+        find_clicked = st.button("Find for me", type="primary", use_container_width=True,
+                                 disabled=not (can_chat and news_key_is_set),
+                                 help=None if news_key_is_set else "Needs TAVILY_API_KEY")
+    if find_clicked:
+        st.session_state.inference_calls += 1
+        try:
+            with st.spinner("Searching and checking what fits you..."):
+                st.session_state.opportunities = opportunity_radar(conn, opp_kind, opp_focus)
+        except Exception as exc:
+            st.error(f"Opportunity search failed: {exc}")
+    found = st.session_state.get("opportunities")
+    if found:
+        if not found["items"]:
+            st.info("Nothing specific turned up. Try a different focus.")
+        st.caption(f"Searched: “{found['query']}”")
+        for i, item in enumerate(found["items"]):
+            with st.container(border=True):
+                st.markdown(f"**[{item['title']}]({item['url']})**")
+                meta = " · ".join(x for x in (item["organization"], item["type"], item["location"],
+                                               f"Deadline {item['deadline']}" if item["deadline"] else "Deadline: check site") if x)
+                st.caption(meta)
+                if item["why_it_fits"]:
+                    st.write(item["why_it_fits"])
+                if st.button("Track this application", key=f"opp_{i}_{item['url']}", type="tertiary"):
+                    added = add_proposals(conn, [opportunity_task(item)])
+                    st.session_state.flash = ("Added to 'Ready when you are' for your approval." if added
+                                              else "That's already saved or waiting for approval.")
+                    st.rerun()
 
 main, side = st.columns([1.75, 1], gap="large")
 
@@ -245,14 +322,23 @@ with side:
                         st.rerun()
 
 with main:
-    st.markdown("### Talk to MANO")
-    a, b, c = st.columns(3)
+    greeting = f"Hey {profile['name'].split()[0]}" if profile["name"].strip() else "Talk to MANO"
+    st.markdown(f"### {greeting}")
+    a, b, c, d = st.columns(4)
     with a:
         brief_clicked = st.button("☀️ Brief my day", use_container_width=True, disabled=not can_chat)
     with b:
         rescue_clicked = st.button("🧭 Rescue my week", use_container_width=True, disabled=not can_chat)
     with c:
         recall_clicked = st.button("↩️ Yesterday's recap", use_container_width=True, disabled=not can_chat)
+    with d:
+        news_clicked = st.button("📰 My news briefing", use_container_width=True,
+                                 disabled=not (can_chat and news_key_is_set),
+                                 help="Recent news on the interests in your profile, with sources."
+                                 if news_key_is_set else "Needs TAVILY_API_KEY to search the news.")
+    friend_mode_on = st.toggle("💛 Just listen", key="friend_mode",
+                               help="MANO responds like a friend: no plans or tasks unless you ask. "
+                                    "Even when off, MANO notices when you're venting and leads with empathy.")
     quick_prompt = (
         "Give me an accurate briefing of the deadlines and commitments you know about, including any confirmed overlaps. Offer only actionable help you can really provide." if brief_clicked else
         "Review my saved commitments and deadline conflicts. Tell me which one to prioritize, and explain that I can build a tentative no-overlap schedule in Rescue Studio using the availability hours I select." if rescue_clicked else
@@ -265,14 +351,39 @@ with main:
             st.write("“I have an exam Friday, I work tomorrow, and I promised my club a presentation. Help me figure out what to do.”")
             st.write("“Can you draft a polite email to my professor?”")
             st.write("“Remember what we decided about my internship applications?”")
+            st.write("“Honestly I'm just exhausted today and need to vent.”")
+    traces = st.session_state.setdefault("traces", {})
     for msg in history:
         with st.chat_message(msg["role"]):
+            steps = traces.get(msg["id"])
+            if steps:
+                with st.expander(f"How MANO worked this out · {len(steps)} skill{'s' if len(steps) > 1 else ''}"):
+                    for n, step in enumerate(steps, 1):
+                        st.markdown(f"**{n}. {step['label']}** {'' if step['ok'] else '⚠️'}  \n"
+                                    f"<span class='small-label'>{step['thought'] or ''} → {step['summary']}</span>",
+                                    unsafe_allow_html=True)
             st.markdown(msg["content"])
     prompt = st.chat_input("What's happening in your world?", disabled=not can_chat)
     if not key_is_set:
         st.info("Add `NEBIUS_API_KEY` to your local `.env` and restart for real conversations. The fictional week and conflict detection work offline.")
     elif calls_left <= 0:
         st.warning("This browser session has reached its demo request limit. Offline features are still available.")
+    if news_clicked:
+        topics = interest_topics(profile)
+        if not topics:
+            st.warning("Add a few interests to **About me** first (for example: AI, internships, cybersecurity).")
+        else:
+            st.session_state.inference_calls += 1
+            add_message(conn, "user", "What's happening in the world on " + ", ".join(topics) + "?")
+            try:
+                with st.spinner("Reading this week's news for you..."):
+                    briefing = personalized_briefing(conn)
+            except Exception as exc:
+                st.error(f"News briefing failed: {exc}")
+            else:
+                add_message(conn, "assistant", briefing["text"])
+                st.rerun()
+
     chosen_prompt = prompt or quick_prompt
     if chosen_prompt and not can_chat:
         st.warning("Live chat isn't available. Check Nebius configuration or the session's demo limit.")
@@ -280,13 +391,16 @@ with main:
         st.session_state.inference_calls += 1
         add_message(conn, "user", chosen_prompt)
         try:
-            with st.spinner("MANO is thinking..."):
-                answer, new_actions = ask_nemotron(conn, chosen_prompt)
+            with st.spinner("MANO is thinking and checking what it needs..."):
+                answer, new_actions, steps = run_agent(conn, chosen_prompt,
+                                                       friend_mode=True if friend_mode_on else None)
         except Exception as exc:
             st.error(f"Nebius inference failed: {exc}")
             st.caption("No pretend AI response has been substituted. Check your API key, model ID, credits and connectivity.")
         else:
-            add_message(conn, "assistant", answer)
+            reply_id = add_message(conn, "assistant", answer)
+            if steps:
+                traces[reply_id] = steps
             add_proposals(conn, new_actions)
             st.rerun()
 

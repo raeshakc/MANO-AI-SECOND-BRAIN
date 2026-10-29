@@ -9,7 +9,7 @@
 1. In VS Code, stop Streamlit (Ctrl+C).
 2. Replace `mano_core.py` and `app.py` in the existing repository with the two files from the V3 patch ZIP. Do not replace `.env` or any secrets.
 3. Copy the new `test_rescue_studio.py` and `test_portable_memory.py` into `tests/`.
-4. Run `python -m pytest -q` (expected: 25 passed in the provided source/test package).
+4. Run `python -m pytest -q` (expected: 41 passed).
 5. Run `python -m streamlit run app.py`.
 6. Test the Rescue Studio with fictional data before pushing.
 7. Verify `git status --short`, `git check-ignore -v .env`, and `git ls-files .env .venv`, then `git add app.py mano_core.py tests/ README.md docs/` and `git commit -m "Add deadline-aware Rescue Studio and portable memory"` and `git push origin main`.
