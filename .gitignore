@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+.streamlit/secrets.toml
+.DS_Store
+
+.env.*.local
+*.sqlite
+*.sqlite3
+*.log
+.coverage
+coverage.xml
