@@ -220,3 +220,14 @@ def test_run_together_mentor_list_is_split_into_lines():
     assert "Thursday.\n2. **Buildathon**" in out and "Saturday.\n3. **AI cert**" in out
     assert "\n\n**Resources** (free)" in out and "\n\n**Let go of for now**" in out
     assert core.tidy_markdown("Plain reply with 2. no bold") == "Plain reply with 2. no bold"
+
+
+def test_fresh_chat_keeps_profile_and_tasks():
+    conn = connect()
+    save_profile(conn, {"name": "Raesha"})
+    add_commitment(conn, "Buildathon submission", "2026-10-31T23:59")
+    add_message(conn, "user", "hi")
+    add_proposals(conn, [{"kind": "add_task", "title": "Watch DSA video", "due_at": None}])
+    core.clear_conversation(conn)
+    assert core.recent_messages(conn) == [] and pending_proposals(conn) == []
+    assert get_profile(conn)["name"] == "Raesha" and len(list_commitments(conn)) == 1

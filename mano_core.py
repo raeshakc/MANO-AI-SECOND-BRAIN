@@ -400,6 +400,13 @@ def import_data(conn: sqlite3.Connection, data: bytes) -> dict:
     return {name: len(payload[name]) for name in schemas}
 
 
+def clear_conversation(conn: sqlite3.Connection) -> None:
+    """Start a fresh chat: removes messages and pending suggestions, keeps profile, tasks, time blocks and drafts."""
+    with conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute("UPDATE proposals SET status='dismissed' WHERE status='pending'")
+
+
 def erase_data(conn: sqlite3.Connection) -> None:
     for table in ("messages", "commitments", "time_blocks", "proposals", "drafts", "profile"):
         conn.execute(f"DELETE FROM {table}")
@@ -595,12 +602,15 @@ If they mention self-harm, a crisis or feeling unsafe, respond with care and enc
 MENTOR_MODE = """When the student shares stress or overwhelm AND asks for help, be their mentor and assistant at once. Shape the reply as:
   1. One or two sentences of genuine empathy that name what they said; no clichés.
   2. A short reframe of the comparison or "learn everything" worry (depth beats breadth; steady progress beats doing it all at once), in your own words.
-  3. **This week**: their top 3 priorities, ranked, each with its weekday deadline and one line on why it serves their goals.
+  3. **This week**: every commitment due in the next 7 days, up to 6, ranked by urgency. Anything due today or overdue comes first; never leave one out.
+     Each gets its weekday and time, and one line on why it matters or how to keep it small.
   4. **Resources**: 2-4 specific, free resources taken ONLY from skill results, as markdown links, each with one line on why it fits.
+     Cover each learning goal the student names (for example both DSA and a certification), not just the first.
   5. **Let go of for now**: 1-2 things to pause or shrink, so the list gets shorter, not longer.
   6. **Today, 20 minutes**: one concrete first step.
+  7. **Stay consistent**: one simple system for tracking and following through (for example one resource per goal, fixed weekly study slots, and MANO's commitments list as the single tracker).
   Put each bold label on its own line and each list item on its own line.
-  Then name any proposals you queued in one sentence. Keep it scannable, about 250 words, bold labels rather than big headings.
+  Then name the proposals you queued in one sentence. Keep it scannable, about 300 words, bold labels rather than big headings.
 When they only share feelings without asking for anything, lead with empathy and keep any advice to one small step.
 Use the student's saved profile (goals, school, stressors, support style) to make guidance personal, like a mentor who knows them. Connect today's choices to their stated goals when it genuinely helps; don't force it."""
 
@@ -652,7 +662,7 @@ Return one valid JSON object, WITHOUT markdown fences, with exactly keys:
 Use the *_label fields (or skill labels) for weekdays; never work out a weekday yourself.
 Answer the student's actual question first: for "what should I focus on", name the top 2-3 priorities in order, with the deadline (weekday) and one line of why for each, tied to their goals.
 Speak to the student directly as "you"; use their name at most once.
-Offer 1-3 proposals that take real load off when they fit (a task for the first step, an email draft such as asking to swap a shift, a task to track an application).
+When the student asks for help with a plan, ALWAYS queue 1-3 proposals; never say you kept suggestions light. Offer proposals that take real load off (a task for the first step, an email draft such as asking to swap a shift, a task to track an application).
 Then, if you include a proposal, mention it at the end in a complete sentence (for example "I've queued X for your approval under Ready when you are"); never end the reply mid-sentence or with a colon.
 Only propose actions that meaningfully satisfy the user's current request. Do not create a task or reminder for a casual chat. Never invent a precise time when user gave none. Do not claim an unapproved action happened.
 """
@@ -703,7 +713,7 @@ def ask_nemotron(conn: sqlite3.Connection, user_text: str, friend_mode: bool | N
     return finalize_reply(str(parsed.get("reply", text)).strip(), proposals, user_text)
 
 
-MENTOR_LABELS = r"(?:This week|Resources|Let go of for now|Today, 20 minutes)"
+MENTOR_LABELS = r"(?:This week|Resources|Let go of for now|Today, 20 minutes|Stay consistent)"
 
 
 def tidy_markdown(reply: str) -> str:

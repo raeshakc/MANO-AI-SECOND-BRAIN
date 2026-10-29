@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mano_core import (
-    PROFILE_FIELDS, accept_proposal, add_commitment, add_message, add_proposals, add_time_block,
+    PROFILE_FIELDS, accept_proposal, clear_conversation, add_commitment, add_message, add_proposals, add_time_block,
     build_rescue_plan, calendar_ics, connect, erase_data, export_data, get_profile,
     import_data, interest_topics, list_commitments, list_drafts, list_time_blocks, load_demo_scenario,
     mark_done, now_local, pending_proposals, personalized_briefing, radar, recent_messages,
@@ -110,6 +110,11 @@ with st.sidebar:
                 st.session_state.flash = (f"Restored {result['messages']} conversation messages, "
                                           f"{result['commitments']} commitments and your profile.")
                 st.rerun()
+    if st.button("Start a fresh chat", use_container_width=True,
+                 help="Clears the conversation and pending suggestions. Keeps your profile, tasks and time blocks."):
+        clear_conversation(conn)
+        st.session_state.pop("traces", None)
+        st.rerun()
     confirm_reset = st.checkbox("I want to erase this session's data")
     if st.button("Erase local MANO data", disabled=not confirm_reset, use_container_width=True):
         erase_data(conn)
