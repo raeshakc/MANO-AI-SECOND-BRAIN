@@ -14,7 +14,7 @@ load_dotenv()
 
 from mano_core import (
     accept_proposal, add_commitment, add_message, add_proposals, add_time_block,
-    ask_nemotron, calendar_ics, connect, erase_data, export_data,
+    ask_nemotron, build_rescue_plan, calendar_ics, connect, erase_data, export_data, import_data,
     list_commitments, list_drafts, list_time_blocks, load_demo_scenario,
     mark_done, now_local, pending_proposals, radar, recent_messages,
     reject_proposal, remove_time_block, tavily_research,
@@ -83,6 +83,18 @@ with st.sidebar:
     st.markdown("**Your data**")
     st.download_button("Download my data (.json)", data=export_data(conn),
                        file_name="mano-data.json", mime="application/json", use_container_width=True)
+    with st.expander("Restore a personal memory backup"):
+        st.caption("This is optional, user-controlled portability. It replaces your current session, and does not automatically sync across visits.")
+        uploaded_backup = st.file_uploader("Select your previous MANO export (.json)", type=["json"], key="mano_restore")
+        confirm_import = st.checkbox("Replace all data in this session with my backup", key="mano_confirm_import")
+        if st.button("Restore my MANO data", disabled=not (uploaded_backup and confirm_import), use_container_width=True):
+            try:
+                result = import_data(conn, uploaded_backup.getvalue())
+            except Exception as exc:
+                st.error(f"Could not restore backup: {exc}")
+            else:
+                st.success(f"Restored {result['messages']} conversation messages and {result['commitments']} commitments.")
+                st.rerun()
     confirm_reset = st.checkbox("I want to erase this session's data")
     if st.button("Erase local MANO data", disabled=not confirm_reset, use_container_width=True):
         erase_data(conn)
@@ -101,6 +113,48 @@ metric1, metric2, metric3 = st.columns(3)
 metric1.metric("Deadlines this week", len(summary["upcoming"]))
 metric2.metric("Schedule collisions", len(summary["conflicts"]))
 metric3.metric("Waiting for your approval", len(pending_proposals(conn)))
+
+with st.expander("🧭 Rescue Studio — turn deadlines into a realistic plan", expanded=True):
+    st.caption("Choose when you're *potentially* available. MANO will find open slots around the schedule you've saved, prioritize earlier deadlines and stage a plan for your approval. This is not connected to your external calendars.")
+    p1, p2, p3, p4 = st.columns([1.1, .8, 1, 1.1])
+    with p1:
+        plan_start = st.date_input("Plan from", value=now.date(), key="rescue_start")
+    with p2:
+        plan_days = st.selectbox("Days", [1, 2, 3, 5, 7], index=1, key="rescue_days")
+    with p3:
+        available_from = st.time_input("Available from", value=datetime.strptime("09:00", "%H:%M").time(), key="rescue_from")
+    with p4:
+        available_to = st.time_input("Available until", value=datetime.strptime("21:00", "%H:%M").time(), key="rescue_to")
+    focus_minutes = st.select_slider("Minutes per focus block (editable estimate)", options=[30, 45, 60, 90, 120], value=60)
+    if st.button("Build my rescue plan", type="primary"):
+        try:
+            st.session_state.rescue_plan = build_rescue_plan(
+                conn, plan_start, plan_days,
+                available_from.strftime("%H:%M"), available_to.strftime("%H:%M"),
+                focus_minutes=focus_minutes,
+                max_blocks=4,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+    plan = st.session_state.get("rescue_plan")
+    if plan:
+        st.write(f"**Tentative plan:** {len(plan['proposals'])} focus blocks from {plan['considered']} unscheduled commitments")
+        for proposal in plan["proposals"]:
+            with st.container(border=True):
+                st.markdown(f"**{proposal['title']}**")
+                st.caption(f"{proposal['start_at'].replace('T',' ')} to {proposal['end_at'][11:16]} · {proposal['details']}")
+        if plan["unscheduled"]:
+            st.warning("No free slot found within your selected window for: " + ", ".join(plan["unscheduled"]))
+        st.caption(plan["note"])
+        if plan["proposals"]:
+            if st.button("Stage these blocks for my approval", type="primary"):
+                count = add_proposals(conn, plan["proposals"])
+                del st.session_state["rescue_plan"]
+                if count:
+                    st.success(f"{count} new blocks staged. Review each one under 'Ready when you are'.")
+                else:
+                    st.info("Those blocks are already saved or awaiting approval. Nothing duplicated.")
+                st.rerun()
 
 main, side = st.columns([1.75, 1], gap="large")
 
@@ -201,7 +255,7 @@ with main:
         recall_clicked = st.button("↩️ Yesterday's recap", use_container_width=True, disabled=not can_chat)
     quick_prompt = (
         "Give me an accurate briefing of the deadlines and commitments you know about, including any confirmed overlaps. Offer only actionable help you can really provide." if brief_clicked else
-        "Help me rescue my week. Identify confirmed deadline and schedule conflicts, suggest a realistic plan, and propose up to four specific tasks or time blocks for me to approve. Don't invent my availability." if rescue_clicked else
+        "Review my saved commitments and deadline conflicts. Tell me which one to prioritize, and explain that I can build a tentative no-overlap schedule in Rescue Studio using the availability hours I select." if rescue_clicked else
         "What were we talking about yesterday? Give a factual summary and mention if there is no conversation from yesterday." if recall_clicked else None
     )
     history = recent_messages(conn, 35)

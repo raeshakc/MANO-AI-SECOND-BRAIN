@@ -10,7 +10,7 @@ import os
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -174,12 +174,172 @@ def radar(conn: sqlite3.Connection, at: datetime | None = None) -> dict:
     return {"upcoming": upcoming, "overdue": overdue, "conflicts": conflicts}
 
 
+def build_rescue_plan(
+    conn: sqlite3.Connection,
+    start_day: date,
+    days: int = 2,
+    day_start: str = "09:00",
+    day_end: str = "21:00",
+    focus_minutes: int = 60,
+    max_blocks: int = 4,
+    at: datetime | None = None,
+) -> dict:
+    """Generate tentative, non-overlapping study/work blocks from saved commitments.
+
+    All availability is assumed only within the *user-selected* window and after
+    excluding blocks saved in MANO. External calendars aren't connected.
+    Planning is deterministic, not an additional model call.
+    """
+    if not isinstance(start_day, date):
+        raise ValueError("Start day must be a date")
+    if not 1 <= days <= 7 or not 1 <= max_blocks <= 12:
+        raise ValueError("Days must be 1–7 and max blocks 1–12")
+    if focus_minutes not in {30, 45, 60, 90, 120}:
+        raise ValueError("Focus duration must be 30, 45, 60, 90 or 120 minutes")
+    try:
+        opening = time.fromisoformat(day_start)
+        closing = time.fromisoformat(day_end)
+    except (TypeError, ValueError) as e:
+        raise ValueError("Use HH:MM for your availability window") from e
+    if datetime.combine(start_day, opening) >= datetime.combine(start_day, closing):
+        raise ValueError("End time must be later than start time")
+    now = at or now_local()
+    if now.tzinfo is not None:
+        now = now.astimezone(ZoneInfo(TZ)).replace(tzinfo=None)
+    saved = list_time_blocks(conn)
+    occupied = []
+    for b in saved:
+        occupied.append((datetime.fromisoformat(b["start_at"]), datetime.fromisoformat(b["end_at"])))
+    for p in pending_proposals(conn):
+        if p["kind"] == "schedule_block":
+            a = p["payload"]
+            occupied.append((datetime.fromisoformat(a["start_at"]), datetime.fromisoformat(a["end_at"])))
+    candidates = []
+    for t in list_commitments(conn):
+        # Already-scheduled tasks are skipped to prevent repeated re-planning.
+        if any((b["title"].startswith("Focus: ") and b["title"][7:].casefold() == t["title"].casefold()) for b in saved):
+            continue
+        if any((p["kind"] == "schedule_block" and p["payload"].get("title", "").casefold() == ("Focus: " + t["title"]).casefold()) for p in pending_proposals(conn)):
+            continue
+        due = None
+        if t["due_at"]:
+            try:
+                due = datetime.fromisoformat(t["due_at"])
+            except ValueError:
+                pass
+        candidates.append((t, due))
+    # Known deadlines first, then undated tasks. Do not assign fictitious due dates.
+    candidates.sort(key=lambda x: (x[1] is None, x[1] or datetime.max, 0 if x[0]["category"] == "academic" else 1, x[0]["title"].casefold()))
+    proposals = []
+    unscheduled = []
+    for task, deadline in candidates:
+        if len(proposals) >= max_blocks:
+            unscheduled.append(task["title"])
+            continue
+        found = None
+        for delta in range(days):
+            day = start_day + timedelta(days=delta)
+            begin = datetime.combine(day, opening)
+            limit = datetime.combine(day, closing)
+            if deadline and deadline >= now:
+                limit = min(limit, deadline)
+            if limit <= begin:
+                continue
+            slot = max(begin, now)
+            # Ceil to the next 15-minute boundary (never schedule in the past).
+            rounded = slot.replace(second=0, microsecond=0)
+            if rounded < slot:
+                rounded += timedelta(minutes=1)
+            slot = rounded + timedelta(minutes=(-rounded.minute) % 15)
+            while slot + timedelta(minutes=focus_minutes) <= limit:
+                finish = slot + timedelta(minutes=focus_minutes)
+                collision = [end for start, end in occupied if slot < end and start < finish]
+                if not collision:
+                    found = (slot, finish)
+                    break
+                slot = max(collision)
+                slot += timedelta(minutes=(-slot.minute) % 15)
+                slot = slot.replace(second=0, microsecond=0)
+            if found:
+                break
+        if not found:
+            unscheduled.append(task["title"])
+            continue
+        first, last = found
+        urgency = ("Overdue — recovery time" if deadline and deadline < now else
+                   "Before deadline: " + deadline.strftime("%a %b %d, %I:%M %p") if deadline else
+                   "Undated goal — optional focus time")
+        proposals.append({"kind":"schedule_block", "title":"Focus: " + task["title"],
+                          "start_at":first.strftime("%Y-%m-%dT%H:%M"),
+                          "end_at":last.strftime("%Y-%m-%dT%H:%M"),
+                          "category":task["category"],
+                          "details": urgency + ". Tentative: check external calendars before approving."})
+        occupied.append((first, last))
+    return {"proposals":proposals, "unscheduled":unscheduled,
+            "considered":len(candidates), "window":f"{day_start}–{day_end}",
+            "note":"Only saved MANO blocks are checked. Other calendars and travel time are not connected. Times are tentative until approved."}
+
+
 def export_data(conn: sqlite3.Connection) -> bytes:
     """Export this session's own records, for transparency and portability."""
     payload = {}
     for table in ("messages", "commitments", "time_blocks", "proposals", "drafts"):
         payload[table] = [dict(r) for r in conn.execute(f"SELECT * FROM {table}")]
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def import_data(conn: sqlite3.Connection, data: bytes) -> dict:
+    """Restore a user-exported MANO vault into this session, replacing its contents.
+
+    Import is deliberately manual on public hosting (no accounts or shared DB).
+    This is NOT an automatically synchronized cross-device memory service.
+    """
+    if not isinstance(data, bytes) or len(data) > 1_000_000:
+        raise ValueError("Choose a MANO JSON export under 1 MB")
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Choose an unmodified MANO data export (.json)") from exc
+    schemas = {
+        "messages": ("id", "role", "content", "created_at"),
+        "commitments": ("id", "title", "due_at", "category", "details", "done", "created_at"),
+        "time_blocks": ("id", "title", "start_at", "end_at", "category", "details", "created_at"),
+        "proposals": ("id", "kind", "payload", "status", "created_at"),
+        "drafts": ("id", "subject", "body", "created_at"),
+    }
+    if not isinstance(payload, dict) or set(payload) != set(schemas):
+        raise ValueError("The file doesn't contain a complete MANO backup")
+    for name, fields in schemas.items():
+        records = payload[name]
+        if not isinstance(records, list) or len(records) > 500:
+            raise ValueError(f"Invalid {name} records")
+        for record in records:
+            if not isinstance(record, dict) or set(record) != set(fields):
+                raise ValueError(f"Invalid {name} record")
+            for field, val in record.items():
+                if isinstance(val, str) and len(val) > 10_000:
+                    raise ValueError(f"{name}.{field} is too large")
+                if val is not None and not isinstance(val, (str, int)):
+                    raise ValueError(f"Invalid field {name}.{field}")
+            if name == "messages" and record["role"] not in {"user", "assistant"}:
+                raise ValueError("Invalid conversation role")
+            if name == "proposals":
+                try:
+                    proposal = json.loads(record["payload"])
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise ValueError("Invalid proposal payload") from exc
+                if not isinstance(proposal, dict):
+                    raise ValueError("Invalid proposal payload")
+    # All validation happens before any deletion. Transaction ensures rollback.
+    with conn:
+        for name in schemas:
+            conn.execute(f"DELETE FROM {name}")
+        for name, fields in schemas.items():
+            column_names = ",".join(fields)
+            qmarks = ",".join("?" for _ in fields)
+            for rec in payload[name]:
+                conn.execute(f"INSERT INTO {name} ({column_names}) VALUES ({qmarks})", tuple(rec[f] for f in fields))
+    return {name: len(payload[name]) for name in schemas}
 
 
 def erase_data(conn: sqlite3.Connection) -> None:
@@ -249,12 +409,41 @@ def validated_proposals(raw: Any) -> list[dict]:
     return accepted
 
 
-def add_proposals(conn: sqlite3.Connection, proposals: list[dict]) -> None:
-    # Only queue a proposal; never quietly write a calendar item or send an email.
+def _proposal_already_exists(conn: sqlite3.Connection, p: dict) -> bool:
+    """Avoid duplicate pending proposals and already-saved tasks/blocks."""
+    if p["kind"] == "add_task":
+        for task in list_commitments(conn):
+            if task["title"].strip().casefold() == p["title"].strip().casefold() and task["due_at"] == p.get("due_at"):
+                return True
+    elif p["kind"] == "schedule_block":
+        for block in list_time_blocks(conn):
+            if (block["title"].strip().casefold() == p["title"].strip().casefold()
+                    and block["start_at"] == p["start_at"] and block["end_at"] == p["end_at"]):
+                return True
+    rows = conn.execute("SELECT kind,payload FROM proposals WHERE status='pending'").fetchall()
+    for r in rows:
+        old = json.loads(r["payload"])
+        if p["kind"] == r["kind"]:
+            if p["kind"] == "add_task" and old.get("title", "").casefold() == p["title"].casefold() and old.get("due_at") == p.get("due_at"):
+                return True
+            if p["kind"] == "schedule_block" and old.get("start_at") == p["start_at"] and old.get("end_at") == p["end_at"] and old.get("title", "").casefold() == p["title"].casefold():
+                return True
+            if p["kind"] in {"draft_email", "research"} and old == p:
+                return True
+    return False
+
+
+def add_proposals(conn: sqlite3.Connection, proposals: list[dict]) -> int:
+    """Stage only new actions; every action still requires human approval."""
+    created = 0
     for proposal in validated_proposals(proposals):
+        if _proposal_already_exists(conn, proposal):
+            continue
         conn.execute("INSERT INTO proposals VALUES (?,?,?,?,?)",
                      (str(uuid.uuid4()), proposal["kind"], json.dumps(proposal), "pending", now_local().isoformat()))
+        created += 1
     conn.commit()
+    return created
 
 
 def pending_proposals(conn: sqlite3.Connection) -> list[dict]:
@@ -329,7 +518,7 @@ def build_prompt(conn: sqlite3.Connection, user_text: str) -> list[dict]:
 Your mission is to connect deadlines, commitments, relationships, academic progress and career goals into realistic next steps.
 Avoid mentioning memory as a feature or announcing that you store facts. Respond naturally to questions about past conversations, citing details only when present in context.
 Never invent schedules, dates, recipients, instructor messages, research results, actions completed, or tool access. If history is absent, say so.
-For conflicting tasks, prioritize hard deadlines, available time, sleep, and explicit user priorities. Suggest thoughtful tradeoffs; do not shame users.
+For conflicting tasks, prioritize hard deadlines, available time, sleep, and explicit user priorities. Suggest thoughtful tradeoffs; do not shame users. Refer to actual named tasks and existing events, not generic productivity advice. If the user needs time-block scheduling, direct them to the Rescue Studio where they define their available hours and can review safe, tentative slots. Suggest modest, realistic steps that fit their actual commitments. Do not propose a task that already exists with the same title and deadline.
 Look at deadline_and_conflict_radar and calendar_blocks to identify real scheduling collisions; don't invent a conflict that the data doesn't show. A specific time block requires known availability: if context lacks it, suggest tentative times explicitly and ask first.
 Propose concrete next actions, but IMPORTANT: approval is always required. The app can save local tasks, make scheduled blocks and store email drafts; it CANNOT send mail, access private email/calendar, schedule background notifications, open Claude/ChatGPT/Perplexity, or browse without Tavily.
 A downloadable calendar file can be offered after approving tasks; do NOT imply that reminders are already on the user's device.

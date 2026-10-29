@@ -15,15 +15,25 @@ MANO is a student-focused life-coordination agent: an assistant that understands
 | Private persistence | `MANO_DATA_MODE=local`, SQLite on the individual's own computer | No |
 | Deadline radar | Flags overdue tasks and upcoming deadlines within seven days | No |
 | Conflict radar | Finds overlapping saved start/end time blocks, with exact overlap window | No |
-| Rescue My Week | Agent reviews actual conflicts and suggests changes | Nebius key |
+| Rescue Studio (new) | Deterministic deadline-first time blocking; checks saved events, stages non-overlapping proposals for approval | No |
+| Rescue My Week chat | Agent reviews actual conflicts and suggests changes | Nebius key |
 | Action proposals | Tasks, timed study blocks, email drafts, Tavily research; separate approval required | Nebius key to generate proposals |
 | Saved tasks and time blocks | Approved tasks/blocks stored to SQLite; optional manual task entry | No |
 | Calendar reminders | Download `.ics` files with 15-/30-minute display alarms | No |
 | Email drafts | Stores drafts only; **never sends them** | Nebius key to generate |
-| Data control | Export data in JSON; clear all local/session data | No |
+| Data control | Export/restore a portable personal JSON backup; clear all local/session data | No |
+| Duplicate-action protection | Prevents repeatedly queueing the same task or time block | No |
 | Fictional demo scenario | Dated chat history + exams, workshop, overlapping meeting and shift | No |
 
 The dashboard intentionally **does not** open with a monologue announcing memory features or require an explicit “remember this” command. Relevant previous conversations are automatically supplied when responding. Only action-taking requires approval.
+
+## Important limits and privacy
+
+- Public `demo` mode keeps data in a private in-memory database **only for the current browser session**. Reloading or leaving may lose this data. It does not automatically remember across visits. A visitor can download a MANO JSON backup and later manually restore it; this is not automatic sync.
+- `local` mode preserves SQLite memory between sessions on a **trusted personal computer**. Do not switch public hosting to `local`: without authentication it could expose one person's records to another.
+- The Rescue Studio checks **only** times saved inside MANO and the user-selected planning window. It cannot see Google/Apple Calendar, travel time, work changes, or actual outside availability. Review all proposed times before approval.
+- Task/calendar actions are local to MANO until you approve them. Calendar exports require a separate import. MANO does **not** send push notifications, emails, or silently change external calendars.
+- Public model calls can use the owner's Nebius credit balance; the per-session request cap is not global usage protection.
 
 ## Technical design
 
