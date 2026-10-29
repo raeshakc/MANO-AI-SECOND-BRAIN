@@ -599,6 +599,7 @@ MENTOR_MODE = """When the student shares stress or overwhelm AND asks for help, 
   4. **Resources**: 2-4 specific, free resources taken ONLY from skill results, as markdown links, each with one line on why it fits.
   5. **Let go of for now**: 1-2 things to pause or shrink, so the list gets shorter, not longer.
   6. **Today, 20 minutes**: one concrete first step.
+  Put each bold label on its own line and each list item on its own line.
   Then name any proposals you queued in one sentence. Keep it scannable, about 250 words, bold labels rather than big headings.
 When they only share feelings without asking for anything, lead with empathy and keep any advice to one small step.
 Use the student's saved profile (goals, school, stressors, support style) to make guidance personal, like a mentor who knows them. Connect today's choices to their stated goals when it genuinely helps; don't force it."""
@@ -702,8 +703,21 @@ def ask_nemotron(conn: sqlite3.Connection, user_text: str, friend_mode: bool | N
     return finalize_reply(str(parsed.get("reply", text)).strip(), proposals, user_text)
 
 
+MENTOR_LABELS = r"(?:This week|Resources|Let go of for now|Today, 20 minutes)"
+
+
+def tidy_markdown(reply: str) -> str:
+    """Models sometimes run a list into one paragraph ("**This week** 1. **A** ... 2. **B**").
+    Put each mentor section label and each bold numbered item on its own line so it renders as a list."""
+    reply = re.sub(r"[ \t]*(\*\*" + MENTOR_LABELS + r"\*\*)", r"\n\n\1", reply).lstrip("\n")
+    reply = re.sub(r"(\*\*" + MENTOR_LABELS + r"\*\*:?)[ \t]+(?=\d{1,2}\.\s)", r"\1\n\n", reply)
+    reply = re.sub(r"(?<=\S)[ \t]+(?=\d{1,2}\.\s+\*\*)", "\n", reply)
+    return re.sub(r"\n{3,}", "\n\n", reply)
+
+
 def finalize_reply(reply: str, proposals: list[dict], user_text: str) -> tuple[str, list[dict]]:
     """Never let the model's wording claim an action the app didn't take."""
+    reply = tidy_markdown(reply)
     # A model saying it completed something is NOT evidence that the app did it.
     # Every write operation must appear as a valid, approval-gated proposal.
     action_requested = bool(re.search(

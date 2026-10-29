@@ -210,3 +210,13 @@ def test_overwhelm_plus_help_request_gets_mentor_not_friend_mode():
     assert wants_to_be_heard("I'm so overwhelmed today and just need to vent")
     prompt = build_prompt(connect(), HERO_PROMPT)[0]["content"]
     assert "**This week**" in prompt and "**Resources**" in prompt and "FRIEND MODE IS ON" not in prompt
+
+
+def test_run_together_mentor_list_is_split_into_lines():
+    raw = ("I hear you. **This week** 1. **Assignment** – Due Thursday. 2. **Buildathon** – Due Saturday. "
+           "3. **AI cert** – Due Saturday. **Resources** (free) - [A](https://a.example) **Let go of for now** TikTok.")
+    out = core.tidy_markdown(raw)
+    assert "**This week**\n\n1. **Assignment**" in out
+    assert "Thursday.\n2. **Buildathon**" in out and "Saturday.\n3. **AI cert**" in out
+    assert "\n\n**Resources** (free)" in out and "\n\n**Let go of for now**" in out
+    assert core.tidy_markdown("Plain reply with 2. no bold") == "Plain reply with 2. no bold"
