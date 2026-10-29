@@ -570,9 +570,21 @@ VENTING_PATTERN = re.compile(
 )
 
 
+HELP_PATTERN = re.compile(
+    r"\b(?:help me|can you|could you|would you|what should i|how (?:do|should|can) i|tell me|figure out"
+    r"|find (?:me|a few|some)|prioriti[sz]e|advice|suggest|resources?|where (?:do|should) i start)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_help(user_text: str) -> bool:
+    return bool(HELP_PATTERN.search(user_text))
+
+
 def wants_to_be_heard(user_text: str) -> bool:
-    """Heuristic: the message reads like sharing feelings rather than asking for a plan."""
-    return bool(VENTING_PATTERN.search(user_text))
+    """Sharing feelings WITHOUT asking for help -> friend mode (listen, don't manage).
+    Feelings plus a request for help -> mentor mode, which leads with empathy."""
+    return bool(VENTING_PATTERN.search(user_text)) and not asks_for_help(user_text)
 
 
 FRIEND_MODE = """FRIEND MODE IS ON. The student wants to be heard, not managed.
@@ -580,7 +592,15 @@ Respond like a caring, grounded friend: reflect what they said in your own words
 Do not give a plan, a list or productivity advice unless they ask for it. Return an empty 'proposals' array.
 If they mention self-harm, a crisis or feeling unsafe, respond with care and encourage them to contact someone they trust or a crisis line such as 988 in the US."""
 
-MENTOR_MODE = """When the student's message reads like sharing feelings (stress, a bad day, loneliness), lead with empathy before any advice, and keep advice to one small step.
+MENTOR_MODE = """When the student shares stress or overwhelm AND asks for help, be their mentor and assistant at once. Shape the reply as:
+  1. One or two sentences of genuine empathy that name what they said; no clichés.
+  2. A short reframe of the comparison or "learn everything" worry (depth beats breadth; steady progress beats doing it all at once), in your own words.
+  3. **This week**: their top 3 priorities, ranked, each with its weekday deadline and one line on why it serves their goals.
+  4. **Resources**: 2-4 specific, free resources taken ONLY from skill results, as markdown links, each with one line on why it fits.
+  5. **Let go of for now**: 1-2 things to pause or shrink, so the list gets shorter, not longer.
+  6. **Today, 20 minutes**: one concrete first step.
+  Then name any proposals you queued in one sentence. Keep it scannable, about 250 words, bold labels rather than big headings.
+When they only share feelings without asking for anything, lead with empathy and keep any advice to one small step.
 Use the student's saved profile (goals, school, stressors, support style) to make guidance personal, like a mentor who knows them. Connect today's choices to their stated goals when it genuinely helps; don't force it."""
 
 
@@ -631,6 +651,7 @@ Return one valid JSON object, WITHOUT markdown fences, with exactly keys:
 Use the *_label fields (or skill labels) for weekdays; never work out a weekday yourself.
 Answer the student's actual question first: for "what should I focus on", name the top 2-3 priorities in order, with the deadline (weekday) and one line of why for each, tied to their goals.
 Speak to the student directly as "you"; use their name at most once.
+Offer 1-3 proposals that take real load off when they fit (a task for the first step, an email draft such as asking to swap a shift, a task to track an application).
 Then, if you include a proposal, mention it at the end in a complete sentence (for example "I've queued X for your approval under Ready when you are"); never end the reply mid-sentence or with a colon.
 Only propose actions that meaningfully satisfy the user's current request. Do not create a task or reminder for a casual chat. Never invent a precise time when user gave none. Do not claim an unapproved action happened.
 """

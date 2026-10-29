@@ -198,3 +198,15 @@ def test_briefing_lists_only_cited_sources_and_rejects_blank(monkeypatch):
     monkeypatch.setattr(core, "_nemotron_json", lambda *a, **k: ("", {"briefing": {"AI": []}}))
     with pytest.raises(RuntimeError, match="didn't return a briefing"):
         personalized_briefing(conn, search=lambda q: results)
+
+
+HERO_PROMPT = ("I'm honestly feeling overwhelmed. Everyone around me seems ahead with internships, certifications and side "
+               "projects, and I feel like I have to learn everything at once. Can you help me figure out what actually "
+               "matters this week, find me a few good resources, and tell me what to let go of for now?")
+
+
+def test_overwhelm_plus_help_request_gets_mentor_not_friend_mode():
+    assert not wants_to_be_heard(HERO_PROMPT)
+    assert wants_to_be_heard("I'm so overwhelmed today and just need to vent")
+    prompt = build_prompt(connect(), HERO_PROMPT)[0]["content"]
+    assert "**This week**" in prompt and "**Resources**" in prompt and "FRIEND MODE IS ON" not in prompt
