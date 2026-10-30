@@ -6,6 +6,7 @@ The public-demo-friendly default is an in-memory database per browser session.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -17,6 +18,7 @@ from typing import Any
 MODEL = "nvidia/nemotron-3-super-120b-a12b"
 API_BASE = "https://api.tokenfactory.us-central1.nebius.com/v1/"
 TZ = os.getenv("MANO_TIMEZONE", "America/Chicago")
+log = logging.getLogger("mano")
 
 
 def now_local() -> datetime:
@@ -63,6 +65,18 @@ def connect(path: str = ":memory:") -> sqlite3.Connection:
         category TEXT NOT NULL DEFAULT 'personal',
         details TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS message_steps (
+        message_id INTEGER PRIMARY KEY,
+        steps TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS usage (
+        day TEXT PRIMARY KEY,
+        calls INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS profile (
         field TEXT PRIMARY KEY,
@@ -390,6 +404,7 @@ def import_data(conn: sqlite3.Connection, data: bytes) -> dict:
                     raise ValueError("Invalid proposal payload")
     # All validation happens before any deletion. Transaction ensures rollback.
     with conn:
+        conn.execute("DELETE FROM message_steps")
         for name in schemas:
             conn.execute(f"DELETE FROM {name}")
         for name, fields in schemas.items():
@@ -397,18 +412,175 @@ def import_data(conn: sqlite3.Connection, data: bytes) -> dict:
             qmarks = ",".join("?" for _ in fields)
             for rec in payload[name]:
                 conn.execute(f"INSERT INTO {name} ({column_names}) VALUES ({qmarks})", tuple(rec[f] for f in fields))
+    conn.execute("DELETE FROM meta WHERE key='onboarding'")
+    conn.commit()
     return {name: len(payload[name]) for name in schemas}
+
+
+def save_steps(conn: sqlite3.Connection, message_id: int, steps: list[dict]) -> None:
+    """Remember how MANO worked out a reply, so the trace survives reloads."""
+    if steps:
+        conn.execute("INSERT OR REPLACE INTO message_steps VALUES (?,?)", (message_id, json.dumps(steps)))
+        conn.commit()
+
+
+def steps_by_message(conn: sqlite3.Connection) -> dict[int, list[dict]]:
+    return {r["message_id"]: json.loads(r["steps"]) for r in conn.execute("SELECT * FROM message_steps")}
+
+
+def message_count(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+
+def _clock(dt: datetime) -> str:
+    return dt.strftime("%I:%M %p").lstrip("0")
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    conn.commit()
+
+
+# ---------------------------------------------------------------- getting to know you
+
+NAME_QUESTION = "Before anything else, what should I call you?"
+FIRST_HELLO = "Hey there, I'm MANO. I'm so happy you're here. " + NAME_QUESTION
+
+
+def onboarding_step(conn: sqlite3.Connection) -> str:
+    """'name' until MANO knows what to call you; after that the conversation is simply open."""
+    return "done" if get_profile(conn)["name"].strip() else "name"
+
+
+def start_conversation(conn: sqlite3.Connection) -> None:
+    """A brand-new person's first message follows MANO's hello, so the history reads naturally."""
+    if message_count(conn) == 0 and onboarding_step(conn) == "name":
+        add_message(conn, "assistant", FIRST_HELLO)
+
+
+NAME_LEADS = r"(?:you can call me|call me|my name is|my name's|name is|i go by|i'?m|i am|it'?s|this is)"
+NOT_NAMES = {"you", "me", "here", "fine", "good", "okay", "ok", "a", "an", "the", "not", "so", "just", "really", "feeling",
+             "tired", "sad", "stressed", "overwhelmed", "great", "well", "back", "busy", "student", "new"}
+
+
+def extract_name(text: str) -> str:
+    """'hi, you can call me raesha' -> 'Raesha'. Keeps it to a few words, no guessing."""
+    t = text.strip()
+    lead = re.search(r"\b" + NAME_LEADS + r"\s+(.+)", t, flags=re.I)
+    if lead:
+        t = lead.group(1)
+    else:
+        t = re.sub(r"^\s*(?:hi|hey|hello)\b[,!. ]*", "", t, flags=re.I)
+    t = re.split(r"[,!?;\n]|\s+(?:and|but|from|who|i|i'?m|studying|here|please)\b", t, maxsplit=1, flags=re.I)[0]
+    words = [w.strip(" '-").rstrip(".") if w.count(".") <= 1 else w.strip(" '-") for w in t.split()][:3]
+    while words and words[0].casefold() in NOT_NAMES:
+        words.pop(0)
+    fix = lambda w: w.title() if (w.islower() or (w.isupper() and len(w) > 3)) else w
+    return " ".join(fix(w) for w in words if w)[:60]
+
+
+def stated_name(text: str) -> str:
+    """Only a clear statement of a name ("my name is X", "call me X", "I go by X"); otherwise empty."""
+    m = re.search(r"\b(?:you can call me|call me|my name is|my name's|i go by|name is)\s+(.+)", text, flags=re.I)
+    return extract_name(m.group(0)) if m else ""
+
+
+def apply_profile_updates(conn: sqlite3.Connection, updates) -> dict:
+    """Save what the student told MANO about themselves. Adds to what's known instead of overwriting it."""
+    if not isinstance(updates, dict):
+        return {}
+    profile = get_profile(conn)
+    clean = {k: v.strip() for k, v in updates.items() if k in PROFILE_FIELDS and isinstance(v, str) and v.strip()}
+    if "name" in clean:
+        name = extract_name(clean["name"])
+        if not name or name.casefold() in NOT_NAMES:
+            clean.pop("name")
+        else:
+            clean["name"] = name
+    for key in ("school", "goals", "stressors"):
+        if key in clean and profile.get(key) and clean[key].casefold() not in profile[key].casefold():
+            clean[key] = f"{profile[key]}; {clean[key]}"
+    if "interests" in clean and profile.get("interests"):
+        topics = [t.strip() for t in re.split(r"[,;\n]+", profile["interests"] + "," + clean["interests"]) if t.strip()]
+        clean["interests"] = ", ".join(dict.fromkeys(topics))
+    save_profile(conn, clean)
+    return clean
+
+
+ABOUT_ME = """If they ask what you can do, answer concretely in a few short lines: plan and prioritize their week around real deadlines,
+mentor them toward their goals, find internships, scholarships, events and hackathons that fit them, bring news on topics they care about,
+draft emails, or just listen when they need to vent. Everything that changes their data waits for their OK. Then ask what's on their mind.
+Reply to small talk ("thanks", "nice to meet you") briefly and warmly, like a person would."""
+
+LEARNING = """GETTING TO KNOW THEM: you're still getting to know this student. Not known yet: {missing}.
+Respond to what they actually said first, and answer any question they ask. Then, only if it fits naturally, ask ONE warm question
+to learn one of the unknown things. Don't ask something every message, and never ask about something they already told you."""
+
+PROFILE_RULE = """Whenever they tell you something about themselves, add it to 'profile_updates' with keys from:
+name (just what to call them), school (school, year, major, workload), goals, interests (comma-separated topics), stressors, location, support_style.
+Only facts they stated, in their meaning, concise; never guess. This is saved quietly, so don't announce it.
+If student_profile has their name, you know it: never ask for it or ask them to confirm it."""
+
+
+def greeting(conn: sqlite3.Connection, at: datetime | None = None) -> dict:
+    """MANO's warm hello when you open it. Built from saved data only, no model call,
+    so it appears instantly and costs nothing."""
+    now = at or now_local()
+    if now.tzinfo is not None:
+        now = now.astimezone(ZoneInfo(TZ)).replace(tzinfo=None)
+    first = get_profile(conn)["name"].strip().split(" ")[0] if get_profile(conn)["name"].strip() else ""
+    if onboarding_step(conn) == "name":
+        return {"headline": "Hey there, I'm MANO.", "subline": "I'm so happy you're here.", "bubble": NAME_QUESTION}
+    headline = f"Hey {first}, what's going on?" if first else "Hey, what's going on?"
+    today, overdue, upcoming = [], [], []
+    for task in list_commitments(conn):
+        try:
+            due = datetime.fromisoformat(task["due_at"]) if task["due_at"] else None
+        except ValueError:
+            due = None
+        if due is None:
+            continue
+        if due < now:
+            overdue.append(task["title"])
+        elif due.date() == now.date():
+            today.append(f"**{task['title']}** {'by' if due.hour >= 23 else 'at'} {_clock(due)}")
+        elif due <= now + timedelta(days=7):
+            upcoming.append((due, task["title"]))
+    for block in list_time_blocks(conn):
+        start = datetime.fromisoformat(block["start_at"])
+        if start.date() == now.date() and start >= now:
+            today.append(f"**{block['title']}** at {_clock(start)}")
+    lines = []
+    if today:
+        shown = today[:3]
+        joined = shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
+        more = f" (plus {len(today) - 3} more)" if len(today) > 3 else ""
+        lines.append(f"Today you've got {joined}{more}.")
+    elif upcoming:
+        due, title = min(upcoming)
+        lines.append(f"Nothing's due today. Next up is **{title}** on {due:%A}.")
+    if overdue:
+        lines.append(f"{overdue[0]} slipped past its deadline{' (and ' + str(len(overdue) - 1) + ' more)' if len(overdue) > 1 else ''}. "
+                     "No stress, we can sort it out together.")
+    lines.append("How are you feeling, and what's on your mind?")
+    return {"headline": headline, "subline": "I'm so happy to see you.", "bubble": " ".join(lines)}
 
 
 def clear_conversation(conn: sqlite3.Connection) -> None:
     """Start a fresh chat: removes messages and pending suggestions, keeps profile, tasks, time blocks and drafts."""
     with conn:
         conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM message_steps")
         conn.execute("UPDATE proposals SET status='dismissed' WHERE status='pending'")
 
 
 def erase_data(conn: sqlite3.Connection) -> None:
-    for table in ("messages", "commitments", "time_blocks", "proposals", "drafts", "profile"):
+    for table in ("messages", "commitments", "time_blocks", "proposals", "drafts", "profile", "message_steps", "meta"):
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
 
@@ -426,7 +598,21 @@ def parse_llm_json(text: str) -> dict:
                 return json.loads(cleaned[start:end+1])
             except json.JSONDecodeError:
                 pass
-        return {"reply": text, "proposals": []}
+        return {"reply": _salvage_reply(cleaned), "proposals": []}
+
+
+def _salvage_reply(text: str) -> str:
+    """Broken JSON (often an unescaped quote): keep just the reply text, never the raw object."""
+    m = re.search(r'"reply"\s*:\s*"(.*?)"\s*,\s*"(?:proposals|profile_updates|next|skill)"', text, flags=re.S)
+    if not m:
+        m = re.search(r'"reply"\s*:\s*"(.*)', text, flags=re.S)
+    body = m.group(1) if m else text
+    body = re.split(r'"\s*,\s*"(?:proposals|profile_updates|next)"\s*:', body)[0]
+    body = body.rstrip().rstrip("}").rstrip().rstrip('"')
+    try:
+        return json.loads('"' + body.replace('\n', '\\n') + '"')
+    except json.JSONDecodeError:
+        return body.replace('\\n', '\n').replace('\\"', '"')
 
 
 def validated_proposals(raw: Any) -> list[dict]:
@@ -595,7 +781,9 @@ def wants_to_be_heard(user_text: str) -> bool:
 
 
 FRIEND_MODE = """FRIEND MODE IS ON. The student wants to be heard, not managed.
-Respond like a caring, grounded friend: reflect what they said in your own words, validate the feeling, and ask at most one gentle question.
+Respond like a caring, grounded friend: reflect what they said in your own words and validate the feeling.
+If they've already shared what's on their mind, don't ask them to share it again. Ask at most one gentle question, and only if it helps.
+When they seem stuck, you may gently mention that you can help them sort it into one small step whenever they'd like.
 Do not give a plan, a list or productivity advice unless they ask for it. Return an empty 'proposals' array.
 If they mention self-harm, a crisis or feeling unsafe, respond with care and encourage them to contact someone they trust or a crisis line such as 988 in the US."""
 
@@ -648,7 +836,7 @@ def build_prompt(conn: sqlite3.Connection, user_text: str, friend_mode: bool = F
 Your mission is to connect deadlines, commitments, relationships, academic progress and career goals into realistic next steps.
 Avoid mentioning memory as a feature or announcing that you store facts. Respond naturally to questions about past conversations, citing details only when present in context.
 Never invent schedules, dates, recipients, instructor messages, research results, actions completed, or tool access. If history is absent, say so.
-For conflicting tasks, prioritize hard deadlines, available time, sleep, and explicit user priorities. Suggest thoughtful tradeoffs; do not shame users. Refer to actual named tasks and existing events, not generic productivity advice. If the user needs time-block scheduling, direct them to the Rescue Studio where they define their available hours and can review safe, tentative slots. Suggest modest, realistic steps that fit their actual commitments. Do not propose a task that already exists with the same title and deadline.
+For conflicting tasks, prioritize hard deadlines, available time, sleep, and explicit user priorities. Suggest thoughtful tradeoffs; do not shame users. Refer to actual named tasks and existing events, not generic productivity advice. If the user needs time blocked, ask which hours they're free, then plan focus time inside those hours (they review every block before it's saved). Suggest modest, realistic steps that fit their actual commitments. Do not propose a task that already exists with the same title and deadline.
 Look at deadline_and_conflict_radar and calendar_blocks to identify real scheduling collisions; don't invent a conflict that the data doesn't show. A specific time block requires known availability: if context lacks it, suggest tentative times explicitly and ask first.
 Propose concrete next actions, but IMPORTANT: approval is always required. The app can save local tasks, make scheduled blocks and store email drafts; it CANNOT send mail, access private email/calendar, schedule background notifications, open Claude/ChatGPT/Perplexity, or browse without Tavily.
 A downloadable calendar file can be offered after approving tasks; do NOT imply that reminders are already on the user's device.
@@ -659,14 +847,22 @@ Return one valid JSON object, WITHOUT markdown fences, with exactly keys:
   {'kind':'schedule_block','title':'...','start_at':'YYYY-MM-DDTHH:MM','end_at':'YYYY-MM-DDTHH:MM','category':'...','details':'...'},
   {'kind':'draft_email','subject':'...','body':'...'},
   {'kind':'research','query':'...'}.
+  Optionally also 'profile_updates': an object (see below).
 Use the *_label fields (or skill labels) for weekdays; never work out a weekday yourself.
 Answer the student's actual question first: for "what should I focus on", name the top 2-3 priorities in order, with the deadline (weekday) and one line of why for each, tied to their goals.
 Speak to the student directly as "you"; use their name at most once.
 When the student asks for help with a plan, ALWAYS queue 1-3 proposals; never say you kept suggestions light. Offer proposals that take real load off (a task for the first step, an email draft such as asking to swap a shift, a task to track an application).
-Then, if you include a proposal, mention it at the end in a complete sentence (for example "I've queued X for your approval under Ready when you are"); never end the reply mid-sentence or with a colon.
+Then, if you include a proposal, mention it at the end in a complete sentence (for example "I've queued X below, waiting for your OK"); never end the reply mid-sentence or with a colon.
 Only propose actions that meaningfully satisfy the user's current request. Do not create a task or reminder for a casual chat. Never invent a precise time when user gave none. Do not claim an unapproved action happened.
 """
     system += "\n" + (FRIEND_MODE if friend_mode else MENTOR_MODE)
+    known = get_profile(conn)
+    missing = [label for key, label in (("name", "their name"), ("goals", "what they're working toward"),
+                                        ("interests", "what they'd like updates on"), ("stressors", "what tends to overwhelm them"))
+               if not known.get(key)]
+    system += "\n" + ABOUT_ME + "\n" + PROFILE_RULE
+    if missing:
+        system += "\n" + LEARNING.format(missing=", ".join(missing))
     if agent_protocol and not friend_mode:
         system += "\n" + agent_protocol
     return [{"role": "system", "content": system},
@@ -682,7 +878,7 @@ def _nemotron_json(messages: list[dict], temperature: float = 0.25, max_tokens: 
     if not api_key:
         raise RuntimeError("Set NEBIUS_API_KEY in .env to enable NVIDIA Nemotron. The app never substitutes a fake model response.")
     from openai import OpenAI
-    client = OpenAI(base_url=os.getenv("NEBIUS_BASE_URL", API_BASE), api_key=api_key, timeout=60.0, max_retries=1)
+    client = OpenAI(base_url=os.getenv("NEBIUS_BASE_URL", API_BASE), api_key=api_key, timeout=float(os.getenv("MANO_MODEL_TIMEOUT", "120")), max_retries=1)
     for budget in (max_tokens, max_tokens * 2):
         result = client.chat.completions.create(
             model=os.getenv("NEBIUS_MODEL", MODEL),
@@ -710,6 +906,7 @@ def ask_nemotron(conn: sqlite3.Connection, user_text: str, friend_mode: bool | N
     text, parsed = _nemotron_json(build_prompt(conn, user_text, friend_mode=friend_mode),
                                   temperature=0.5 if friend_mode else 0.25)
     proposals = [] if friend_mode else validated_proposals(parsed.get("proposals", []))
+    apply_profile_updates(conn, parsed.get("profile_updates"))
     return finalize_reply(str(parsed.get("reply", text)).strip(), proposals, user_text)
 
 
@@ -741,7 +938,7 @@ def finalize_reply(reply: str, proposals: list[dict], user_text: str) -> tuple[s
         reply, flags=re.IGNORECASE,
     ))
     if proposals and claimed_completion:
-        reply = "I've prepared an action for you to review under 'Ready when you are'. " \
+        reply = "I've prepared an action for you. It's waiting for your OK. " \
                 "Nothing has been saved or sent yet."
     elif not proposals and (action_requested or claimed_completion):
         reply = "I couldn't prepare a valid action to approve, so nothing was saved. " \

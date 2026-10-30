@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MANO</title>
+  <meta name="description" content="MANO, a personal AI companion for students.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip" href="#composer-input">Skip to message box</a>
+
+  <header class="topbar">
+    <div class="brand"><span class="spark" aria-hidden="true">✦</span> MANO</div>
+    <nav class="nav" aria-label="MANO">
+      <button type="button" class="navbtn rail-toggle" data-open="rail" aria-controls="rail" aria-expanded="false">Your week</button>
+      <button type="button" class="navbtn wide-only" data-open="opps">Opportunities</button>
+      <button type="button" class="navbtn wide-only" data-open="about">About you</button>
+      <div class="menu">
+        <button type="button" class="navbtn" id="menu-button" aria-haspopup="true" aria-expanded="false">More</button>
+        <div class="menu-list" id="menu-list" role="menu" hidden>
+          <button type="button" role="menuitem" class="mobile-only" data-open="opps">Opportunities</button>
+          <button type="button" role="menuitem" class="mobile-only" data-open="about">About you</button>
+          <button type="button" role="menuitem" data-action="fresh-chat">Start a fresh chat</button>
+          <a role="menuitem" href="/api/calendar.ics" download>Add my week to a calendar</a>
+          <a role="menuitem" href="/api/export" download>Download my data</a>
+          <button type="button" role="menuitem" data-action="import">Restore from a backup</button>
+          <button type="button" role="menuitem" data-action="sample-week">Try a sample week</button>
+          <button type="button" role="menuitem" data-action="erase" class="danger">Erase everything</button>
+        </div>
+      </div>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <main class="conversation" id="conversation">
+      <section class="hello" aria-labelledby="hello-title">
+        <h1 id="hello-title">Hey, what's going on?</h1>
+        <p class="hello-sub" id="hello-sub">I'm so happy to see you.</p>
+      </section>
+
+      <ol class="thread" id="thread" aria-live="polite" aria-label="Conversation"></ol>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <div class="quick" role="group" aria-label="Quick asks">
+          <button type="button" class="chip" data-ask="Brief my day: what's on my plate, what matters most, and what can wait?">Brief my day</button>
+          <button type="button" class="chip" data-action="briefing">News for me</button>
+          <button type="button" class="chip" data-open="opps">Find opportunities</button>
+          <label class="listen" title="MANO just listens. No plans or tasks unless you ask.">
+            <input type="checkbox" id="listen"> <span>Just listen</span>
+          </label>
+        </div>
+        <div class="box">
+          <label for="composer-input" class="sr-only">Message MANO</label>
+          <textarea id="composer-input" rows="1" placeholder="What's on your mind?" maxlength="4000"></textarea>
+          <button type="submit" class="send" id="send">Send</button>
+        </div>
+        <p class="fineprint" id="fineprint">Runs on NVIDIA Nemotron through Nebius Token Factory. Nothing is saved or sent without your OK.</p>
+      </form>
+    </main>
+
+    <aside class="rail" id="rail" aria-label="Your week">
+      <div class="rail-head">
+        <h2>Your week</h2>
+        <button type="button" class="close" data-close="rail" aria-label="Close your week">Close</button>
+      </div>
+      <section id="rail-waiting" class="rail-section" hidden>
+        <details class="undecided">
+          <summary id="rail-waiting-summary">Suggestions you haven't decided on</summary>
+          <ul class="proposals" id="rail-proposals"></ul>
+        </details>
+      </section>
+      <section class="rail-section">
+        <h3>Coming up</h3>
+        <ul class="tasks" id="tasks"></ul>
+        <details class="add">
+          <summary>Add something</summary>
+          <form id="task-form">
+            <label>What is it?<input name="title" required maxlength="240" placeholder="Business law assignment"></label>
+            <label>When is it due? (optional)<input name="due" type="datetime-local"></label>
+            <button type="submit" class="primary">Add to my week</button>
+          </form>
+        </details>
+      </section>
+      <section id="rail-blocks" class="rail-section" hidden>
+        <h3>Time you've set aside</h3>
+        <ul class="blocks" id="blocks"></ul>
+      </section>
+      <section id="rail-drafts" class="rail-section" hidden>
+        <h3>Email drafts</h3>
+        <p class="note">Saved here only. MANO never sends email.</p>
+        <div id="drafts"></div>
+      </section>
+    </aside>
+  </div>
+
+  <dialog class="sheet" id="opps" aria-labelledby="opps-title">
+    <form method="dialog" class="sheet-head">
+      <h2 id="opps-title">Opportunities for you</h2>
+      <button class="close" aria-label="Close opportunities">Close</button>
+    </form>
+    <p class="note">MANO searches the web live and only shows real listings, each linked to its source. Check details on the site before applying.</p>
+    <form id="opps-form" class="opps-form">
+      <div class="kinds" role="radiogroup" aria-label="What are you looking for?" id="kinds"></div>
+      <label class="focus">Focus (optional)<input name="focus" maxlength="120" placeholder="For example: cybersecurity, AI"></label>
+      <button type="submit" class="primary" id="opps-go">Find for me</button>
+    </form>
+    <div id="opps-results" aria-live="polite"></div>
+  </dialog>
+
+  <dialog class="sheet" id="about" aria-labelledby="about-title">
+    <form method="dialog" class="sheet-head">
+      <h2 id="about-title">About you</h2>
+      <button class="close" aria-label="Close about you">Close</button>
+    </form>
+    <p class="note">MANO uses this in every conversation, so its advice fits your goals and your news fits your interests.</p>
+    <form id="about-form" class="about-form"></form>
+  </dialog>
+
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <template id="tpl-mano">
+    <li class="msg mano">
+      <span class="avatar" aria-hidden="true">✦</span>
+      <div class="body"></div>
+    </li>
+  </template>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

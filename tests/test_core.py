@@ -231,3 +231,62 @@ def test_fresh_chat_keeps_profile_and_tasks():
     core.clear_conversation(conn)
     assert core.recent_messages(conn) == [] and pending_proposals(conn) == []
     assert get_profile(conn)["name"] == "Raesha" and len(list_commitments(conn)) == 1
+
+
+def test_greeting_is_warm_personal_and_mentions_today():
+    from datetime import datetime
+    conn = connect()
+    at = datetime(2026, 10, 29, 14, 0)
+    assert core.greeting(conn, at)["headline"] == "Hey there, I'm MANO."  # new person: MANO asks your name
+    save_profile(conn, {"name": "Raesha K"})
+    add_commitment(conn, "Trunk and Treat event", "2026-10-29T16:45")
+    add_commitment(conn, "Bag of Candy assignment", "2026-10-29T23:59")
+    add_commitment(conn, "Buildathon submission", "2026-10-31T23:59")
+    add_commitment(conn, "Old reading", "2026-10-28T09:00")
+    hello = core.greeting(conn, at)
+    assert hello["headline"] == "Hey Raesha, what's going on?" and hello["subline"] == "I'm so happy to see you."
+    assert "**Trunk and Treat event** at 4:45 PM and **Bag of Candy assignment** by 11:59 PM" in hello["bubble"]
+    assert "Old reading slipped past its deadline" in hello["bubble"] and "Buildathon" not in hello["bubble"]
+
+
+def test_greeting_points_to_next_deadline_when_today_is_clear():
+    from datetime import datetime
+    conn = connect()
+    save_profile(conn, {"name": "Sam"})
+    add_commitment(conn, "Buildathon submission", "2026-10-31T23:59")
+    assert "Next up is **Buildathon submission** on Saturday" in core.greeting(conn, datetime(2026, 10, 29, 9, 0))["bubble"]
+
+
+def test_extract_name_handles_how_people_actually_answer():
+    cases = {"raesha": "Raesha", "my name is raesha k.c.": "Raesha K.C.", "Hi, I'm Raesha and I study CS": "Raesha",
+             "call me Rae!": "Rae", "RAESHA": "Raesha", "hey! its sam.": "Sam", "  ": "",
+             "Hi you can call me Raesha": "Raesha", "I go by Rae": "Rae", "hello": ""}
+    for text, name in cases.items():
+        assert core.extract_name(text) == name, text
+
+
+def test_profile_updates_add_to_what_is_known_and_reject_bad_names():
+    conn = connect()
+    save_profile(conn, {"name": "Raesha", "goals": "FAANG job", "interests": "AI, internships"})
+    core.apply_profile_updates(conn, {"name": "you", "goals": "CompTIA Security+", "interests": "ai, cybersecurity",
+                                      "school": 7, "unknown": "x"})
+    p = get_profile(conn)
+    assert p["name"] == "Raesha" and p["goals"] == "FAANG job; CompTIA Security+"
+    assert p["interests"] == "AI, internships, ai, cybersecurity" or p["interests"].startswith("AI, internships")
+    assert core.apply_profile_updates(conn, "nonsense") == {}
+
+
+def test_broken_model_json_never_leaks_into_the_chat():
+    broken = ('{"reply":"Got it, Raesha. How does that sound for "staying on top"?",'
+              '"proposals":[],"profile_updates":{"support_style":"ask first"}}')
+    reply = core.parse_llm_json(broken)["reply"]
+    assert reply == 'Got it, Raesha. How does that sound for "staying on top"?'
+    assert "proposals" not in reply and "{" not in reply
+
+
+def test_known_name_is_never_asked_again():
+    conn = connect()
+    save_profile(conn, {"name": "Raesha"})
+    prompt = build_prompt(conn, "hi")[0]["content"]
+    assert "never ask for it or ask them to confirm it" in prompt
+    assert "their name" not in prompt.split("Not known yet:")[-1].split("\n")[0]

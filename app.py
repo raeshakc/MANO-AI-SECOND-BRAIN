@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mano_core import (
-    PROFILE_FIELDS, accept_proposal, clear_conversation, add_commitment, add_message, add_proposals, add_time_block,
+    PROFILE_FIELDS, accept_proposal, clear_conversation, greeting, message_count, add_commitment, add_message, add_proposals, add_time_block,
     build_rescue_plan, calendar_ics, connect, erase_data, export_data, get_profile,
     import_data, interest_topics, list_commitments, list_drafts, list_time_blocks, load_demo_scenario,
     mark_done, now_local, pending_proposals, personalized_briefing, radar, recent_messages,
@@ -114,6 +114,7 @@ with st.sidebar:
                  help="Clears the conversation and pending suggestions. Keeps your profile, tasks and time blocks."):
         clear_conversation(conn)
         st.session_state.pop("traces", None)
+        st.session_state.visit_start_count = 0
         st.rerun()
     confirm_reset = st.checkbox("I want to erase this session's data")
     if st.button("Erase local MANO data", disabled=not confirm_reset, use_container_width=True):
@@ -125,8 +126,9 @@ with st.sidebar:
 
 now = now_local()
 st.markdown("<div class='eyebrow'>PERSONAL AI · NVIDIA × NEBIUS</div>", unsafe_allow_html=True)
-st.title("Make room for life. ✦")
-st.markdown("<div class='subline'>Classes, careers, work, people, plans. Tell MANO what's happening. It keeps the pieces connected and helps you act on what matters.</div>", unsafe_allow_html=True)
+hello = greeting(conn)
+st.title(hello["headline"])
+st.markdown(f"<div class='subline'>{hello['subline']} 💛</div>", unsafe_allow_html=True)
 st.caption(f"{now.strftime('%A, %B %-d')} · {os.getenv('MANO_TIMEZONE', 'America/Chicago').replace('_',' ')} · Your actions require approval")
 
 metric1, metric2, metric3 = st.columns(3)
@@ -156,7 +158,7 @@ with st.expander("🎯 About me — goals, interests and how you like support", 
             st.session_state.flash = "Profile saved. MANO will use it from your next message."
             st.rerun()
 
-with st.expander("🧭 Rescue Studio — turn deadlines into a realistic plan", expanded=True):
+with st.expander("🧭 Rescue Studio — turn deadlines into a realistic plan"):
     st.caption("Choose when you're *potentially* available. MANO will find open slots around the schedule you've saved, prioritize earlier deadlines and stage a plan for your approval. This is not connected to your external calendars.")
     p1, p2, p3, p4 = st.columns([1.1, .8, 1, 1.1])
     with p1:
@@ -327,8 +329,7 @@ with side:
                         st.rerun()
 
 with main:
-    greeting = f"Hey {profile['name'].split()[0]}" if profile["name"].strip() else "Talk to MANO"
-    st.markdown(f"### {greeting}")
+    st.markdown("### Talk to me")
     a, b, c, d = st.columns(4)
     with a:
         brief_clicked = st.button("☀️ Brief my day", use_container_width=True, disabled=not can_chat)
@@ -350,13 +351,10 @@ with main:
         "What were we talking about yesterday? Give a factual summary and mention if there is no conversation from yesterday." if recall_clicked else None
     )
     history = recent_messages(conn, 35)
-    if not history:
-        with st.container(border=True):
-            st.write("**Start anywhere. No setup questions needed.**")
-            st.write("“I have an exam Friday, I work tomorrow, and I promised my club a presentation. Help me figure out what to do.”")
-            st.write("“Can you draft a polite email to my professor?”")
-            st.write("“Remember what we decided about my internship applications?”")
-            st.write("“Honestly I'm just exhausted today and need to vent.”")
+    # MANO says hello at the start of each visit, until you reply. Not saved to the conversation.
+    if "visit_start_count" not in st.session_state:
+        st.session_state.visit_start_count = message_count(conn)
+    show_hello = message_count(conn) == st.session_state.visit_start_count
     traces = st.session_state.setdefault("traces", {})
     for msg in history:
         with st.chat_message(msg["role"]):
@@ -368,6 +366,9 @@ with main:
                                     f"<span class='small-label'>{step['thought'] or ''} → {step['summary']}</span>",
                                     unsafe_allow_html=True)
             st.markdown(msg["content"])
+    if show_hello:
+        with st.chat_message("assistant"):
+            st.markdown(hello["bubble"])
     prompt = st.chat_input("What's happening in your world?", disabled=not can_chat)
     if not key_is_set:
         st.info("Add `NEBIUS_API_KEY` to your local `.env` and restart for real conversations. The fictional week and conflict detection work offline.")

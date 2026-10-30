@@ -53,7 +53,7 @@ Tavily is MANO's window onto the world, always called at runtime and always cite
 
 ## Important limits and privacy
 
-- Public `demo` mode keeps data in a private in-memory database **only for the current browser session**. Reloading or leaving may lose this data. It does not automatically remember across visits. A visitor can download a MANO JSON backup and later manually restore it; this is not automatic sync.
+- Hosted `demo` mode gives each browser its own private SQLite file, keyed by a random cookie. MANO remembers you across reloads and visits on that browser, but nothing is shared between visitors, and the files are cleared if the server restarts. Download my data and Restore from a backup move your data between browsers.
 - `local` mode preserves SQLite memory between sessions on a **trusted personal computer**. Do not switch public hosting to `local`: without authentication it could expose one person's records to another.
 - The Rescue Studio checks **only** times saved inside MANO and the user-selected planning window. It cannot see Google/Apple Calendar, travel time, work changes, or actual outside availability. Review all proposed times before approval.
 - Task/calendar actions are local to MANO until you approve them. Calendar exports require a separate import. MANO does **not** send push notifications, emails, or silently change external calendars.
@@ -62,12 +62,14 @@ Tavily is MANO's window onto the world, always called at runtime and always cite
 ## Technical design
 
 ```text
-Student -> Streamlit chat -> local context assembly
+Student -> MANO web app (web/) -> FastAPI (server.py) -> context assembly
                                   |— dated conversation history / topic retrieval
                                   |— assignments + deadlines (SQLite)
                                   |— scheduled blocks + deterministic conflict radar
                              NVIDIA Nemotron 3 Super
                              via Nebius Token Factory
+                             agent loop: chains up to 3 read-only skills,
+                             each step streamed live to the browser (SSE)
                                       |
                         Answer + validated proposed actions
                                       |
@@ -112,12 +114,24 @@ python -m scripts.verify_nebius
 Launch MANO:
 
 ```bash
-streamlit run app.py
+uvicorn server:app --reload
 ```
 
-To keep conversation data **between restarts on your own computer**, set `MANO_DATA_MODE=local` before launching. The default `demo` mode keeps each browser session's data in its own memory database, which does **not** persist across new browser sessions. Do **not** enable `local` mode on a public multi-user host.
+Then open **http://localhost:8000**.
+
+For your own everyday use, set `MANO_DATA_MODE=local` in `.env`: everything is kept in one private file (`mano_private.db`) on your computer. Do **not** use `local` mode on a public host.
+
+The original Streamlit version still works with `streamlit run app.py`.
+
+### Deploy (free)
+
+**Render:** push to GitHub, then on render.com choose **New → Blueprint** and pick this repo. `render.yaml` sets everything up; paste `NEBIUS_API_KEY` and `TAVILY_API_KEY` when asked. Free instances sleep when idle, so the first visit can take about a minute.
+
+**Any Docker host** (Hugging Face Spaces, Fly.io, Railway): use the included `Dockerfile` and set the same two keys as secrets.
 
 ## Try the end-to-end story
+
+In the web app, **More → Try a sample week** loads the same fictional data; "Your week" holds the radar, "Opportunities" the radar search, and replies show **How I worked this out**. The steps below use the Streamlit labels.
 
 1. Click **Load fictional student week**. It seeds a *fictional* profile (goals and interests), a yesterday conversation about an exam, a club presentation and the gym, plus a conflicting shift and meeting.
 2. Check **Your radar**: it should identify the overlap in the time blocks.
@@ -141,7 +155,7 @@ python -m scripts.demo_check
 
 A public demo should set `MANO_MAX_CALLS_PER_SESSION` and must still be protected with provider spending controls; this is a *per-browser* safety rail, not a global limit.
 
-The automated suite (41 tests) checks the agent loop and skill budget, skill sandboxing, Opportunity Radar validation, date-specific recall, strict approval, conflict correctness, data deletion, backup/restore, Rescue Studio planning, calendar event generation, email drafts, the goals profile, friend mode and the news briefing's source handling (with the model and search mocked). These are **unit tests**, not a claim that the live model or Streamlit GUI was externally verified.
+The automated suite (64 tests) checks the web API (private per-browser data, live agent steps, approval gate, limits), the agent loop and skill budget, skill sandboxing, Opportunity Radar validation, date-specific recall, strict approval, conflict correctness, data deletion, backup/restore, Rescue Studio planning, calendar event generation, email drafts, the goals profile, friend mode and the news briefing's source handling (with the model and search mocked). These are **unit tests**, not a claim that the live model or Streamlit GUI was externally verified.
 
 ## Security and privacy boundaries
 
@@ -194,7 +208,9 @@ See [docs/V3_RESCUE_STUDIO_DEMO.md](docs/V3_RESCUE_STUDIO_DEMO.md) for the demo 
 
 ## Project files
 
-- `app.py` — Streamlit UI and approvals
+- `server.py` — FastAPI web app: API, live agent steps over SSE, per-browser private storage, demo limits
+- `web/` — chat-first interface (plain HTML, CSS and JavaScript; no build step)
+- `app.py` — original Streamlit UI (kept as a fallback)
 - `mano_agent.py` — reusable skills registry, Nemotron agent loop, Opportunity Radar
 - `mano_core.py` — SQLite storage, goals profile, deterministic radar, Nemotron integration (mentor and friend modes), news briefing, validated proposals, calendar export
 - `scripts/demo_check.py` — Offline workflow check
