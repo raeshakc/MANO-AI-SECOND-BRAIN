@@ -302,3 +302,9 @@ def test_honesty_rules_come_last_and_ban_stock_openers():
     prompt = build_prompt(connect(), "do you really think DSA alone will get me there?")[0]["content"]
     assert prompt.rstrip().endswith("Then give the next step.")
     assert 'Do not start with "I hear"' in prompt and "give your honest opinion first" in prompt
+
+
+def test_small_talk_gets_real_conversation_not_a_loop():
+    prompt = build_prompt(connect(), "I just came here to chat")[0]["content"]
+    assert "When they just want to chat, actually chat" in prompt
+    assert 'Never ask "what\'s on your mind"' in prompt
