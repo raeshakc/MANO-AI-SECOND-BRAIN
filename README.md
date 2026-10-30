@@ -2,14 +2,21 @@
 
 **NVIDIA × Nebius Global AI Hackathon (2026) · Personal AI track**
 
-MANO is a student-focused personal AI: a mentor that knows your goals, a planner that spots real deadline and schedule conflicts, a news briefing tuned to your interests, and a friend that listens when you just need to vent. Recommendations become **approved** tasks, time blocks, email drafts, or source-grounded research, never silent actions.
+MANO is a personal AI friend and mentor for students. It gets to know you through conversation, remembers what you're going through, tells you the truth when you're avoiding something, questions beliefs that hold you back, helps you plan, finds opportunities and news that fit you, and cheers you up when you're low. You can type or just talk to it. Everything that changes your data waits for your OK.
 
-> **Pitch:** Most apps help you track one part of your life. MANO connects them. When study, work, friendships and career goals collide, MANO helps you decide what matters and take the next step.
+> **Why:** Every app tracks one piece of a student's life. None of them know you. MANO does, and acts like a friend who wants the best for you.
+
+**What's new in this version:** a chat-first web app (`server.py` + `web/`) with a natural first conversation, an honest friend-and-mentor personality, friend check-ins that remember your last conversation, voice input and spoken replies, live agent steps, and cheer-up songs. The original Streamlit app (`app.py`) still works as a fallback.
 
 ## What works in this MVP
 
 | Capability | Implementation | Requires API? |
 |---|---|---|
+| **Honest friend and mentor** | Nemotron gives real opinions, names patterns kindly, questions beliefs, celebrates wins; listening mode when you need it | Nebius key |
+| **Natural first conversation** | No forms: MANO asks your name and learns your goals, interests and stressors as you talk, saving them to your profile | Nebius key |
+| **Friend check-in** | When you open MANO it greets you about something from your last conversation and what's due soon | Nebius key |
+| **Voice** | Talk instead of typing (browser speech recognition); MANO answers out loud | Browser support |
+| **Cheer-up songs** | MANO suggests a song for your mood, with YouTube and Spotify links | Nebius key |
 | **Agent with reusable skills** | Nemotron chains up to 3 read-only skills (schedule check, past-conversation recall, focus planner, news, opportunity search, web research) before answering; every step is shown under the reply | Nebius key (+ Tavily for web skills) |
 | **Opportunity Radar** | Live Tavily search for internships, scholarships, events, research programs and hackathons matched to the profile; Nemotron turns real results into source-linked cards; "Track this application" stages a deadline task | Nebius + Tavily keys |
 | Goals profile ("About me") | Saved goals, school, interests, stressors and support style; fed into every conversation | No (to save) |
@@ -178,27 +185,6 @@ The vision is one assistant a student can rely on daily. Each step below needs e
 5. **Browsing context**, strictly opt-in, from a browser extension the student controls (for example, saving pages to MANO rather than collecting history).
 
 See [docs/V3_RESCUE_STUDIO_DEMO.md](docs/V3_RESCUE_STUDIO_DEMO.md) for the demo walkthrough.
-
-## Hackathon submission plan
-
-**Submission deadline: Friday October 30, 2026 at 10:00 AM PDT / 12:00 PM CDT.** Official rules: https://nebiusglobalaihackathon.devpost.com/rules
-
-- [ ] Run an actual Nebius inference request and verify consistent structured output (requires personal key)
-- [ ] Capture 3–5 realistic but fictional workflows and measure if tasks were extracted correctly
-- [ ] Public hosted demo running in `demo` mode, with key configured securely via hosting secrets
-- [ ] Publish a public repo with a visible MIT license, reproducible setup instructions, and demo screenshots
-- [ ] Submit a working demo URL, public repository URL and under-three-minute public YouTube video
-- [ ] Demo one **real** sequence: conflict detected -> AI reasons -> action proposed -> human approves -> task or .ics exported -> prior decision recalled
-- [ ] Describe honest limitations; label the prototype as an MVP
-
-### Three-minute demo narrative
-
-- **0:00–0:20:** “An exam, a shift and a club deadline all land in the same week. You shouldn't have to mentally juggle them.”
-- **0:20–0:55:** Import fictional scenario, show exact scheduling overlap and deadline radar.
-- **0:55–1:45:** Trigger a real Nemotron model response and **Rescue my week**; approve a suggested action.
-- **1:45–2:20:** Show an exported calendar item and draft preparation (both need approval).
-- **2:20–2:50:** Ask what was discussed yesterday; demonstrate factual recall.
-- **2:50–3:00:** One-sentence tech stack and why MANO matters beyond the hackathon.
 
 ## Sources
 
