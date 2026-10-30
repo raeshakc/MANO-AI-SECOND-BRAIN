@@ -72,8 +72,8 @@ def test_agent_stops_after_skill_budget(monkeypatch):
     conn = connect()
     calls = script(monkeypatch, [{"skill": "check_schedule", "args": {"n": i}} for i in range(10)])
     reply, proposals, steps = agent.run_agent(conn, "help", max_skill_calls=3)
-    assert len(steps) == 3 and len(calls) == 4
-    assert "used all skill calls" in calls[-1][-1]["content"]
+    assert len(steps) == 3 and len(calls) == 5  # 3 skills, the final turn, and one retry for an empty answer
+    assert any("used all skill calls" in m["content"] for m in calls[-1])
     assert reply  # a graceful answer, never a crash
 
 
@@ -162,3 +162,18 @@ def test_demo_chat_weekdays_match_the_deadlines():
     exam = next(t for t in core.list_commitments(conn) if "exam" in t["title"])
     from datetime import datetime
     assert datetime.fromisoformat(exam["due_at"]).strftime("%A") in said
+
+
+def test_empty_or_json_scrap_reply_is_retried_never_shown(monkeypatch):
+    conn = connect()
+    calls = script(monkeypatch, [{"reply": '{"": ""}'}, {"reply": "I'm your friend and mentor, Raesha.", "proposals": []}])
+    reply, _, _ = agent.run_agent(conn, "Who are you to me exactly")
+    assert reply == "I'm your friend and mentor, Raesha." and len(calls) == 2
+    script(monkeypatch, [{"reply": ""}])
+    assert agent.run_agent(conn, "hello?")[0] == core.LOST_WORDS
+
+
+def test_mano_knows_a_person_not_a_file():
+    prompt = core.build_prompt(connect(), "what do you know about me")[0]["content"]
+    assert "Know them as a person, not a file" in prompt and "never a list of data" in prompt
+    assert "never save them as interests" in prompt and "about (who they are" in prompt

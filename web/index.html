@@ -57,6 +57,9 @@
         <div class="box">
           <label for="composer-input" class="sr-only">Message MANO</label>
           <textarea id="composer-input" rows="1" placeholder="What's on your mind?" maxlength="4000"></textarea>
+          <button type="button" class="mic" id="mic" aria-label="Talk to MANO" aria-pressed="false" hidden>
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.25-3.5a.75.75 0 0 0-1.5 0 4.75 4.75 0 0 1-9.5 0 .75.75 0 0 0-1.5 0 6.26 6.26 0 0 0 5.5 6.2V20H9a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-2.25v-2.3a6.26 6.26 0 0 0 5.5-6.2Z"/></svg>
+          </button>
           <button type="submit" class="send" id="send">Send</button>
         </div>
         <p class="fineprint" id="fineprint">Runs on NVIDIA Nemotron through Nebius Token Factory. Nothing is saved or sent without your OK.</p>

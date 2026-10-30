@@ -207,3 +207,43 @@ def test_asking_for_help_overrides_just_listen(client, monkeypatch):
     calls = script(monkeypatch, {"reply": "Here's a plan.", "proposals": []})
     events(client.post("/api/chat", json={"text": "Can you help me plan my week?", "listen": True}))
     assert "FRIEND MODE IS ON" not in calls[0][0]["content"]
+
+
+def test_mano_talks_like_an_honest_friend(client, monkeypatch):
+    known(client)
+    calls = script(monkeypatch, {"reply": "Okay, real talk: you've mentioned scrolling three times. That's the Buildathon's biggest enemy.",
+                                 "proposals": []})
+    events(client.post("/api/chat", json={"text": "I keep scrolling instead of working"}))
+    system = calls[0][0]["content"]
+    assert "close friend and mentor, not a chatbot" in system and "Tells the truth" in system
+    assert 'Never open with stock lines like "I hear you"' in system
+
+
+def test_cheer_up_song_gets_a_play_link_built_by_mano(client, monkeypatch):
+    known(client)
+    client.put("/api/profile", json={"music": "Taylor Swift, Coldplay"})
+    calls = script(monkeypatch, {"reply": "Here's one to lift you up.", "proposals": [],
+                                 "song": {"title": "Fix You", "artist": "Coldplay"}})
+    state = events(client.post("/api/chat", json={"text": "I'm sad today", "listen": True}))[-1][1]["state"]
+    last = state["messages"][-1]["content"]
+    assert "**Fix You by Coldplay**" in last
+    assert "https://www.youtube.com/results?search_query=Fix+You+Coldplay" in last
+    assert "Taylor Swift, Coldplay" in calls[0][1]["content"]  # MANO knows what you love
+
+
+def test_friend_check_in_remembers_and_is_cached(client, monkeypatch):
+    assert client.get("/api/checkin").json()["text"] is None  # new person: MANO asks their name instead
+    known(client)
+    calls = script(monkeypatch, {"reply": "Hey you! Did you get a start on the Buildathon last night?"})
+    first = client.get("/api/checkin").json()["text"]
+    assert first.startswith("Hey you! Did you get a start")
+    assert client.get("/api/checkin").json()["text"] == first and len(calls) == 1  # cached until something changes
+    assert "Write MANO's first message right now" in calls[0][0]["content"]
+
+
+def test_motivation_while_listening_retries_instead_of_losing_words(client, monkeypatch):
+    known(client)
+    calls = script(monkeypatch, {"reply": ""}, {"response": "You founded a club and carry 21 credits. You're not behind."})
+    state = events(client.post("/api/chat", json={"text": "I need motivation, I feel like everyone is ahead of me"}))[-1][1]["state"]
+    assert state["messages"][-1]["content"].startswith("You founded a club") and len(calls) == 2
+    assert "give real encouragement grounded in their story" in calls[0][0]["content"]

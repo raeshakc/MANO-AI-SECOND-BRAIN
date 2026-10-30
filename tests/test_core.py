@@ -290,3 +290,15 @@ def test_known_name_is_never_asked_again():
     prompt = build_prompt(conn, "hi")[0]["content"]
     assert "never ask for it or ask them to confirm it" in prompt
     assert "their name" not in prompt.split("Not known yet:")[-1].split("\n")[0]
+
+
+def test_asking_for_a_plan_gets_a_draft_not_more_questions():
+    prompt = build_prompt(connect(), "help me make a weekly view")[0]["content"]
+    assert "DRAFT IT NOW" in prompt and "Never make them answer questions before they see a plan" in prompt
+    assert "Never propose busywork" in prompt
+
+
+def test_honesty_rules_come_last_and_ban_stock_openers():
+    prompt = build_prompt(connect(), "do you really think DSA alone will get me there?")[0]["content"]
+    assert prompt.rstrip().endswith("Then give the next step.")
+    assert 'Do not start with "I hear"' in prompt and "give your honest opinion first" in prompt

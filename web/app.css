@@ -22,7 +22,7 @@
 body[data-time="morning"]   { --sky: #ffe1bc; }
 body[data-time="afternoon"] { --sky: #d4e2fb; }
 body[data-time="evening"]   { --sky: #d6cdf3; }
-body[data-time="night"]     { --sky: #27305c; --hello-ink: #f1f3fb; }
+body[data-time="night"]     { --sky: #b9bfe3; }
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -293,3 +293,16 @@ textarea.field { resize: vertical; min-height: 76px; line-height: 1.45; }
 .rail .proposal .title { font-size: 15px; }
 .rail .proposal .actions { margin-top: 8px; }
 .rail .proposal .primary, .rail .proposal .quiet { padding: 5px 12px; font-size: 14px; }
+
+/* Talking to MANO */
+.mic {
+  flex: none; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-soft); display: grid; place-items: center;
+}
+.mic:hover { color: var(--ink); border-color: var(--ink-soft); }
+.mic.listening { background: var(--spark); border-color: var(--spark); color: #2a1a00; }
+@media (prefers-reduced-motion: no-preference) {
+  .mic.listening { animation: listening 1.4s ease-in-out infinite; }
+  @keyframes listening { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--spark) 25%, transparent); } }
+}
+.msg .speak { background: none; border: 0; padding: 2px 0; margin-top: 6px; font-size: 14px; color: var(--ink-soft); text-decoration: underline; }

@@ -90,11 +90,14 @@
     return box;
   }
 
-  function manoMessage(contentNode, steps) {
+  function manoMessage(contentNode, steps, speakable) {
     const li = $("#tpl-mano").content.firstElementChild.cloneNode(true);
     const body = $(".body", li);
     if (steps && steps.length) body.append(stepsBlock(steps));
     body.append(contentNode);
+    if (speakable && "speechSynthesis" in window) {
+      body.append(el("button", { type: "button", class: "speak", text: "Read aloud", onclick: () => speak(speakable) }));
+    }
     return li;
   }
 
@@ -144,7 +147,7 @@
     thread.replaceChildren();
     for (const m of state.messages) {
       if (m.role === "user") thread.append(el("li", { class: "msg you" }, el("div", { class: "body", text: m.content })));
-      else thread.append(manoMessage(md(m.content), m.steps));
+      else thread.append(manoMessage(md(m.content), m.steps, m.content));
     }
     if (showHello()) thread.append(helloMessage());
     const fresh = freshProposals();
@@ -287,6 +290,10 @@
           } else if (event === "done") {
             setState(data.state);
             scrollToEnd();
+            if (spokenTurn) {
+              const last = [...state.messages].reverse().find((m) => m.role === "assistant");
+              if (last) speak(last.content);
+            }
           } else if (event === "error") {
             throw new Error(data.message);
           }
@@ -299,6 +306,7 @@
       try { setState(await api("/api/state")); } catch (_) { /* keep what we have */ }
     } finally {
       setBusy(false);
+      spokenTurn = false;
     }
   }
 
@@ -343,6 +351,137 @@
   async function removeBlock(id) {
     try { setState(await api(`/api/blocks/${id}`, { method: "DELETE" })); toast("Removed."); }
     catch (err) { toast(err.message, true); }
+  }
+
+  // ---------- voice ----------
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognizer = null, listening = false, spokenTurn = false;
+
+  function plainForSpeech(text) {
+    let t = String(text || "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")          // links -> their words
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/[*_#>`]/g, "")
+      .replace(/^\s*[-•]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      .replace(/\p{Extended_Pictographic}/gu, "")
+      .replace(/([.!?:])\s*\n{2,}/g, "$1 ").replace(/\n{2,}/g, ". ").replace(/\s+/g, " ").trim();
+    if (t.length > 900) {                                    // long plans: read the opening, the rest stays on screen
+      const cut = t.slice(0, 900);
+      t = cut.slice(0, Math.max(cut.lastIndexOf(". "), 400) + 1) + " The rest is on your screen.";
+    }
+    return t;
+  }
+
+  function pickVoice() {
+    const voices = speechSynthesis.getVoices().filter((v) => v.lang && v.lang.startsWith("en"));
+    const liked = ["Samantha", "Ava", "Allison", "Google US English", "Karen", "Moira", "Daniel"];
+    return liked.map((n) => voices.find((v) => v.name.includes(n))).find(Boolean) || voices[0] || null;
+  }
+
+  function speak(text) {
+    if (!("speechSynthesis" in window)) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(plainForSpeech(text));
+    const v = pickVoice();
+    if (v) u.voice = v;
+    u.rate = 1.02;
+    speechSynthesis.speak(u);
+  }
+
+  function setListening(on) {
+    listening = on;
+    const mic = $("#mic");
+    mic.classList.toggle("listening", on);
+    mic.setAttribute("aria-pressed", String(on));
+    mic.setAttribute("aria-label", on ? "Stop listening" : "Talk to MANO");
+    $("#composer-input").placeholder = on ? "Listening… tap the mic when you're done" : (state && state.onboarding !== "done" ? ONBOARDING_HINT.name : "What's on your mind?");
+    $("#fineprint").textContent = on
+      ? "Listening. Your browser turns your voice into text (Safari uses Apple's speech service, Chrome uses Google's)."
+      : $("#fineprint").textContent;
+    if (!on && state) renderFlags();
+  }
+
+  // Keeps listening through pauses until you tap the mic again (or go quiet for a while).
+  const SILENCE_MS = 8000;
+  let heard = "", silenceTimer = null, userDone = false;
+
+  function finishListening() {
+    userDone = true;
+    clearTimeout(silenceTimer);
+    try { recognizer && recognizer.stop(); } catch (_) { /* already stopped */ }
+  }
+
+  function startRecognizer() {
+    const input = $("#composer-input");
+    recognizer = new Recognition();
+    recognizer.lang = navigator.language || "en-US";
+    recognizer.interimResults = true;
+    recognizer.continuous = true;
+    let sessionFinal = "";
+    recognizer.onresult = (e) => {
+      let interim = "";
+      sessionFinal = "";
+      for (let i = 0; i < e.results.length; i++) {
+        if (e.results[i].isFinal) sessionFinal += " " + e.results[i][0].transcript;
+        else interim += " " + e.results[i][0].transcript;
+      }
+      input.value = `${heard} ${sessionFinal} ${interim}`.replace(/\s+/g, " ").trim();
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(finishListening, SILENCE_MS);
+    };
+    recognizer.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") return;  // a pause, not a problem
+      userDone = true;
+      const why = e.error === "not-allowed" || e.error === "service-not-allowed"
+        ? "Allow microphone access for this site in your browser settings, then try again."
+        : `Voice input stopped (${e.error}).`;
+      toast(why, true);
+    };
+    recognizer.onend = () => {
+      heard = input.value.trim();                 // keep everything said so far
+      if (!userDone) {                            // the browser stopped on its own: keep going
+        try { startRecognizer(); return; } catch (_) { /* fall through and send */ }
+      }
+      clearTimeout(silenceTimer);
+      setListening(false);
+      const said = input.value.trim();
+      heard = "";
+      if (said) {
+        input.value = "";
+        spokenTurn = true;
+        send(said);
+      }
+    };
+    recognizer.start();
+  }
+
+  // Sending (button or Enter) while the mic is on: stop listening quietly, don't send twice or refill the box.
+  function cancelListening() {
+    if (!listening) return;
+    userDone = true;
+    clearTimeout(silenceTimer);
+    const r = recognizer;
+    recognizer = null;
+    if (r) {
+      r.onresult = null;
+      r.onend = null;
+      try { r.abort(); } catch (_) { /* already stopped */ }
+    }
+    heard = "";
+    setListening(false);
+  }
+
+  function toggleListening() {
+    if (listening) { finishListening(); return; }
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    heard = $("#composer-input").value.trim();     // you can start typing, then keep talking
+    userDone = false;
+    try {
+      startRecognizer();
+      setListening(true);
+      silenceTimer = setTimeout(finishListening, SILENCE_MS * 2);  // never left on by accident
+    } catch (err) { toast("Voice input couldn't start. Try again in a moment.", true); }
   }
 
   // ---------- sheets, menu, rail ----------
@@ -450,10 +589,19 @@
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#composer").requestSubmit(); }
     });
     $("#listen").addEventListener("change", () => state && renderFlags());
+    if (Recognition) {
+      $("#mic").hidden = false;
+      $("#mic").addEventListener("click", toggleListening);
+    }
+    if ("speechSynthesis" in window) speechSynthesis.getVoices();  // loads the voice list early
+    input.addEventListener("input", () => { if ("speechSynthesis" in window) speechSynthesis.cancel(); });
     $("#composer").addEventListener("submit", (e) => {
       e.preventDefault();
       const text = input.value;
       if (!text.trim()) return;
+      const wasListening = listening;
+      cancelListening();
+      if (wasListening) spokenTurn = true;
       input.value = ""; grow();
       send(text);
     });
@@ -527,10 +675,23 @@
     });
   }
 
+  // A friend's hello: start with the instant greeting, then swap in MANO's own check-in when it's ready.
+  async function checkIn() {
+    if (!state || state.onboarding !== "done" || !state.flags.ai) return;
+    try {
+      const { text } = await api("/api/checkin");
+      if (text && !sentThisVisit) {
+        state.greeting.bubble = text;
+        renderThread();
+      }
+    } catch (_) { /* the instant greeting stays */ }
+  }
+
   async function boot() {
     wire();
     try {
       setState(await api("/api/state"));
+      checkIn();
     } catch (err) {
       toast("MANO couldn't load. Check that the server is running, then reload.", true);
     }

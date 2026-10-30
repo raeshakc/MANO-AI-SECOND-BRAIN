@@ -162,6 +162,30 @@ def state(request: Request, response: Response):
         conn.close()
 
 
+@app.get("/api/checkin")
+def checkin(request: Request, response: Response):
+    """A friend's hello when you open MANO. Quietly returns nothing if the AI is unavailable."""
+    if not os.getenv("NEBIUS_API_KEY", "").strip():
+        return {"text": None}
+    conn = _open(request, response)
+    try:
+        if core.onboarding_step(conn) == "name":
+            return {"text": None}
+        cached = core.get_meta(conn, "checkin")
+        try:
+            if not cached:
+                _spend_call(conn)
+            text = core.friend_checkin(conn)
+        except HTTPException:
+            return {"text": None}
+        except Exception as exc:
+            logging.getLogger("mano").warning("Check-in failed: %s: %s", type(exc).__name__, exc)
+            return {"text": None}
+        return {"text": text}
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------- chat (live agent steps over SSE)
 
 def _sse(event: str, data) -> str:
